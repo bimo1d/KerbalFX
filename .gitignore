@@ -1,0 +1,8 @@
+# Build/temp artifacts
+**/CSC*.TMP
+**/build_*.rsp
+**/build_*.txt
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
