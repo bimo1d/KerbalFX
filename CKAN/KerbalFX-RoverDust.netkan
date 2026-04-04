@@ -1,0 +1,8 @@
+identifier: KerbalFX-RoverDust
+name: KerbalFX - Rover Dust
+abstract: Rover wheel dust FX module for KerbalFX.
+$kref: '#/ckan/github/bimo1d/KerbalFX/asset_match/^KerbalFX-RoverDust-.*\.zip$'
+x_netkan_version_edit: '^[vV]?(?<version>.+)$'
+$vref: '#/ckan/ksp-avc'
+depends:
+  - name: KerbalFX-Core

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using KSP.Localization;
 using UnityEngine;
 
@@ -180,6 +181,7 @@ namespace RoverDustFX
     internal static class KerbalFxRuntimeConfig
     {
         public static bool Loaded;
+        public static int Revision;
 
         public static float EmissionMultiplier = 2.30f;
         public static float MaxParticlesMultiplier = 1.45f;
@@ -190,8 +192,74 @@ namespace RoverDustFX
         public static float LightAlphaExponent = 1.25f;
         public static float MinCombinedLight = 0.040f;
         public static float ShadowLightFactor = 0.20f;
+        public static float DaylightRateFloor = 0.42f;
+        public static float DaylightAlphaFloor = 0.40f;
+
+        private static readonly Dictionary<string, float> BodyVisibilityMultipliers = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+
+        private static DateTime lastCoreConfigWriteUtc = DateTime.MinValue;
+        private static DateTime lastRoverDustConfigWriteUtc = DateTime.MinValue;
 
         public static void Refresh()
+        {
+            ReloadFromGameDatabase();
+            PrimeConfigFileStamp(GetCoreConfigPath(), ref lastCoreConfigWriteUtc);
+            PrimeConfigFileStamp(GetRoverDustConfigPath(), ref lastRoverDustConfigWriteUtc);
+        }
+
+        public static void TryHotReloadFromDisk()
+        {
+            bool coreChanged = HasFileChanged(GetCoreConfigPath(), ref lastCoreConfigWriteUtc);
+            bool roverChanged = HasFileChanged(GetRoverDustConfigPath(), ref lastRoverDustConfigWriteUtc);
+            if (!coreChanged && !roverChanged)
+            {
+                return;
+            }
+
+            ReloadFromDiskFiles();
+        }
+
+        public static float GetBodyVisibilityMultiplier(string bodyName)
+        {
+            if (string.IsNullOrEmpty(bodyName))
+            {
+                return 1f;
+            }
+
+            float multiplier;
+            if (BodyVisibilityMultipliers.TryGetValue(bodyName.Trim(), out multiplier))
+            {
+                return Mathf.Clamp(multiplier, 0.30f, 3.00f);
+            }
+
+            return 1f;
+        }
+
+        private static void ReloadFromGameDatabase()
+        {
+            SeedDefaultValues();
+
+            ApplyFromNodes("KERBALFX_CORE");
+            ApplyFromNodes("KERBALFX_ROVER_DUST");
+
+            Loaded = true;
+            Revision++;
+            LogCurrentConfig("GameDatabase");
+        }
+
+        private static void ReloadFromDiskFiles()
+        {
+            SeedDefaultValues();
+
+            ApplyFromDiskConfigNode(GetCoreConfigPath(), "KERBALFX_CORE");
+            ApplyFromDiskConfigNode(GetRoverDustConfigPath(), "KERBALFX_ROVER_DUST");
+
+            Loaded = true;
+            Revision++;
+            LogCurrentConfig("HotReload");
+        }
+
+        private static void SeedDefaultValues()
         {
             EmissionMultiplier = 2.30f;
             MaxParticlesMultiplier = 1.45f;
@@ -202,18 +270,85 @@ namespace RoverDustFX
             LightAlphaExponent = 1.25f;
             MinCombinedLight = 0.040f;
             ShadowLightFactor = 0.20f;
+            DaylightRateFloor = 0.42f;
+            DaylightAlphaFloor = 0.40f;
 
-            ApplyFromNodes("KERBALFX_CORE");
-            ApplyFromNodes("KERBALFX_ROVER_DUST");
+            SeedDefaultBodyVisibilityMultipliers();
+        }
 
-            Loaded = true;
+        private static void SeedDefaultBodyVisibilityMultipliers()
+        {
+            BodyVisibilityMultipliers.Clear();
+
+            BodyVisibilityMultipliers["Mun"] = 1.65f;
+            BodyVisibilityMultipliers["Minmus"] = 1.55f;
+            BodyVisibilityMultipliers["Duna"] = 1.00f;
+            BodyVisibilityMultipliers["Moho"] = 1.85f;
+            BodyVisibilityMultipliers["Eeloo"] = 2.00f;
+            BodyVisibilityMultipliers["Eve"] = 1.55f;
+            BodyVisibilityMultipliers["Vall"] = 1.45f;
+            BodyVisibilityMultipliers["Bop"] = 1.45f;
+            BodyVisibilityMultipliers["Dres"] = 1.50f;
+            BodyVisibilityMultipliers["Ike"] = 1.12f;
+            BodyVisibilityMultipliers["Pol"] = 1.15f;
+            BodyVisibilityMultipliers["Tylo"] = 0.92f;
+        }
+
+        private static void LogCurrentConfig(string sourceTag)
+        {
             RoverDustLog.Info(
-                "[KerbalFX] Config loaded: EmissionMultiplier=" + EmissionMultiplier.ToString("F2", CultureInfo.InvariantCulture)
+                "[KerbalFX] Config " + sourceTag
+                + ": EmissionMultiplier=" + EmissionMultiplier.ToString("F2", CultureInfo.InvariantCulture)
                 + " MaxParticlesMultiplier=" + MaxParticlesMultiplier.ToString("F2", CultureInfo.InvariantCulture)
                 + " RadiusScaleMultiplier=" + RadiusScaleMultiplier.ToString("F2", CultureInfo.InvariantCulture)
                 + " WheelBoostPower=" + WheelBoostPower.ToString("F2", CultureInfo.InvariantCulture)
                 + " WheelBoostMax=" + WheelBoostMax.ToString("F2", CultureInfo.InvariantCulture)
+                + " DaylightRateFloor=" + DaylightRateFloor.ToString("F2", CultureInfo.InvariantCulture)
+                + " DaylightAlphaFloor=" + DaylightAlphaFloor.ToString("F2", CultureInfo.InvariantCulture)
+                + " BodyVisibilityEntries=" + BodyVisibilityMultipliers.Count.ToString(CultureInfo.InvariantCulture)
             );
+        }
+
+        private static string GetCoreConfigPath()
+        {
+            return Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KerbalFX", "Core", "KerbalFX_Core.cfg");
+        }
+
+        private static string GetRoverDustConfigPath()
+        {
+            return Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KerbalFX", "RoverDust", "KerbalFX_RoverDust.cfg");
+        }
+
+        private static void PrimeConfigFileStamp(string path, ref DateTime stamp)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            {
+                return;
+            }
+
+            stamp = File.GetLastWriteTimeUtc(path);
+        }
+
+        private static bool HasFileChanged(string path, ref DateTime stamp)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            {
+                return false;
+            }
+
+            DateTime writeUtc = File.GetLastWriteTimeUtc(path);
+            if (writeUtc <= DateTime.MinValue)
+            {
+                return false;
+            }
+
+            if (writeUtc <= stamp)
+            {
+                return false;
+            }
+
+            stamp = writeUtc;
+            return true;
         }
 
         private static void ApplyFromNodes(string nodeName)
@@ -237,15 +372,92 @@ namespace RoverDustFX
                     continue;
                 }
 
-                EmissionMultiplier = ReadFloat(node, "EmissionMultiplier", EmissionMultiplier, 0.10f, 12f);
-                MaxParticlesMultiplier = ReadFloat(node, "MaxParticlesMultiplier", MaxParticlesMultiplier, 0.30f, 6f);
-                RadiusScaleMultiplier = ReadFloat(node, "RadiusScaleMultiplier", RadiusScaleMultiplier, 0.50f, 3f);
-                WheelBoostPower = ReadFloat(node, "WheelBoostPower", WheelBoostPower, 0.60f, 3f);
-                WheelBoostMax = ReadFloat(node, "WheelBoostMax", WheelBoostMax, 1f, 12f);
-                LightRateExponent = ReadFloat(node, "LightRateExponent", LightRateExponent, 0.50f, 3f);
-                LightAlphaExponent = ReadFloat(node, "LightAlphaExponent", LightAlphaExponent, 0.60f, 3f);
-                MinCombinedLight = ReadFloat(node, "MinCombinedLight", MinCombinedLight, 0f, 0.3f);
-                ShadowLightFactor = ReadFloat(node, "ShadowLightFactor", ShadowLightFactor, 0f, 1f);
+                ApplyFromNode(node);
+            }
+        }
+
+        private static void ApplyFromDiskConfigNode(string configPath, string nodeName)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(configPath) || !File.Exists(configPath))
+                {
+                    return;
+                }
+
+                ConfigNode root = ConfigNode.Load(configPath);
+                if (root == null)
+                {
+                    return;
+                }
+
+                ConfigNode[] nodes = root.GetNodes(nodeName);
+                if (nodes == null || nodes.Length == 0)
+                {
+                    return;
+                }
+
+                for (int i = 0; i < nodes.Length; i++)
+                {
+                    ConfigNode node = nodes[i];
+                    if (node != null)
+                    {
+                        ApplyFromNode(node);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                RoverDustLog.Info("[KerbalFX] HotReload failed for " + configPath + ": " + ex.Message);
+            }
+        }
+
+        private static void ApplyFromNode(ConfigNode node)
+        {
+            EmissionMultiplier = ReadFloat(node, "EmissionMultiplier", EmissionMultiplier, 0.10f, 12f);
+            MaxParticlesMultiplier = ReadFloat(node, "MaxParticlesMultiplier", MaxParticlesMultiplier, 0.30f, 6f);
+            RadiusScaleMultiplier = ReadFloat(node, "RadiusScaleMultiplier", RadiusScaleMultiplier, 0.50f, 3f);
+            WheelBoostPower = ReadFloat(node, "WheelBoostPower", WheelBoostPower, 0.60f, 3f);
+            WheelBoostMax = ReadFloat(node, "WheelBoostMax", WheelBoostMax, 1f, 12f);
+            LightRateExponent = ReadFloat(node, "LightRateExponent", LightRateExponent, 0.50f, 3f);
+            LightAlphaExponent = ReadFloat(node, "LightAlphaExponent", LightAlphaExponent, 0.60f, 3f);
+            MinCombinedLight = ReadFloat(node, "MinCombinedLight", MinCombinedLight, 0f, 0.3f);
+            ShadowLightFactor = ReadFloat(node, "ShadowLightFactor", ShadowLightFactor, 0f, 1f);
+            DaylightRateFloor = ReadFloat(node, "DaylightRateFloor", DaylightRateFloor, 0f, 1f);
+            DaylightAlphaFloor = ReadFloat(node, "DaylightAlphaFloor", DaylightAlphaFloor, 0f, 1f);
+
+            ApplyBodyVisibilityFromNode(node);
+        }
+
+        private static void ApplyBodyVisibilityFromNode(ConfigNode node)
+        {
+            if (node == null)
+            {
+                return;
+            }
+
+            ConfigNode[] bodyNodes = node.GetNodes("BODY_VISIBILITY");
+            if (bodyNodes == null || bodyNodes.Length == 0)
+            {
+                return;
+            }
+
+            for (int i = 0; i < bodyNodes.Length; i++)
+            {
+                ConfigNode bodyNode = bodyNodes[i];
+                if (bodyNode == null)
+                {
+                    continue;
+                }
+
+                string name = bodyNode.GetValue("name");
+                if (string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                float multiplier = ReadFloat(bodyNode, "multiplier", 1f, 0.30f, 3.00f);
+                BodyVisibilityMultipliers[name.Trim()] = multiplier;
             }
         }
 
@@ -329,6 +541,7 @@ namespace RoverDustFX
             {
                 settingsRefreshTimer = SettingsRefreshInterval;
                 RoverDustConfig.Refresh();
+                KerbalFxRuntimeConfig.TryHotReloadFromDisk();
             }
 
             if (!RoverDustConfig.EnableDust)
@@ -619,7 +832,8 @@ namespace RoverDustFX
         private bool disposed;
         private bool colorInitialized;
         private bool lastSuppressed;
-        private int appliedConfigRevision = -1;
+        private int appliedUiRevision = -1;
+        private int appliedRuntimeRevision = -1;
         private string lastSurfaceKey = string.Empty;
         private string lastSuppressionKey = string.Empty;
         private Color currentColor = new Color(0.70f, 0.66f, 0.58f, 1f);
@@ -655,7 +869,9 @@ namespace RoverDustFX
             }
 
             profileRefreshTimer -= dt;
-            if (profileRefreshTimer <= 0f || appliedConfigRevision != RoverDustConfig.Revision)
+            if (profileRefreshTimer <= 0f
+                || appliedUiRevision != RoverDustConfig.Revision
+                || appliedRuntimeRevision != KerbalFxRuntimeConfig.Revision)
             {
                 profileRefreshTimer = 0.33f;
                 ApplyRuntimeVisualProfile(false);
@@ -694,16 +910,23 @@ namespace RoverDustFX
             float slipBoost = Mathf.Clamp01(slip * 2.4f);
 
             float quality = RoverDustConfig.QualityPercent / 100f;
+            float qualityRateScale = 1f + (Mathf.Pow(quality, 1.60f) - 1f) * 0.75f;
+            float bodyVisibility = GetBodyDustVisibilityMultiplier(vessel);
             float baseRate = (120f + 480f * speedFactor) * (0.45f + 0.55f * slipBoost) * KerbalFxRuntimeConfig.EmissionMultiplier;
-            float targetRate = baseRate * quality * wheelDustRateScale;
+            float targetRate = baseRate * qualityRateScale * wheelDustRateScale * bodyVisibility;
 
             Vector3 stableNormal = GetStableGroundNormal(vessel, hit.point, hit.normal);
             RefreshLightingState(vessel, hit.point, stableNormal, dt);
             if (advancedQualityFeatures)
             {
-                float lightRateFactor = Mathf.Pow(Mathf.Clamp01(cachedLightFactor), KerbalFxRuntimeConfig.LightRateExponent);
+                float light = Mathf.Clamp01(cachedLightFactor);
+                float lightRateFactor = Mathf.Pow(light, KerbalFxRuntimeConfig.LightRateExponent);
+                if (light > 0.001f)
+                {
+                    lightRateFactor = Mathf.Lerp(KerbalFxRuntimeConfig.DaylightRateFloor, 1f, lightRateFactor);
+                }
                 targetRate *= lightRateFactor;
-                if (cachedLightFactor < 0.025f)
+                if (light < 0.025f)
                 {
                     targetRate = 0f;
                 }
@@ -743,6 +966,7 @@ namespace RoverDustFX
                         + " L=" + cachedLightFactor.ToString("F2")
                         + " W=" + wheelDustRateScale.ToString("F2")
                         + " R=" + wheelEffectiveRadius.ToString("F2")
+                        + " B=" + bodyVisibility.ToString("F2")
                     ));
                 }
             }
@@ -805,16 +1029,25 @@ namespace RoverDustFX
 
         private void ApplyRuntimeVisualProfile(bool force)
         {
-            if (!force && appliedConfigRevision == RoverDustConfig.Revision)
+            if (!force
+                && appliedUiRevision == RoverDustConfig.Revision
+                && appliedRuntimeRevision == KerbalFxRuntimeConfig.Revision)
             {
                 return;
             }
 
-            appliedConfigRevision = RoverDustConfig.Revision;
+            appliedUiRevision = RoverDustConfig.Revision;
+            appliedRuntimeRevision = KerbalFxRuntimeConfig.Revision;
 
             int qualityPercent = Mathf.Clamp(RoverDustConfig.QualityPercent, 25, 200);
             float quality = qualityPercent / 100f;
             float qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
+            float qualityParticleScale = 1f + (Mathf.Pow(quality, 1.70f) - 1f) * 0.75f;
+            float qualitySizeScale = Mathf.Lerp(0.76f, 1.36f, qualityNorm);
+            float bodyVisibility = GetBodyDustVisibilityMultiplier(part != null ? part.vessel : null);
+            float bodyBoostNorm = Mathf.Clamp01((bodyVisibility - 1f) / 0.5f);
+            float bodyParticleScale = Mathf.Lerp(1f, 1.28f, bodyBoostNorm);
+            float bodySizeScale = Mathf.Lerp(1f, 1.16f, bodyBoostNorm);
             advancedQualityFeatures = qualityPercent >= 100;
             wheelEffectiveRadius = GetEffectiveWheelRadius(wheel, part);
             wheelDustRateScale = advancedQualityFeatures ? GetWheelDustRateScale(wheelEffectiveRadius) : 1f;
@@ -824,25 +1057,24 @@ namespace RoverDustFX
             }
 
             ParticleSystem.MainModule main = particleSystem.main;
-            float maxParticlesBase = 920f * Mathf.Pow(quality, 1.12f) * KerbalFxRuntimeConfig.MaxParticlesMultiplier;
-            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticlesBase * wheelDustRateScale, 260f, 3200f));
+            float maxParticlesBase = 760f * qualityParticleScale * KerbalFxRuntimeConfig.MaxParticlesMultiplier;
+            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticlesBase * wheelDustRateScale * bodyParticleScale, 220f, 4600f));
 
-            float sizeCompensation = Mathf.Lerp(1.28f, 0.82f, qualityNorm);
-            float minSize = 0.040f * sizeCompensation;
-            float maxSize = 0.115f * sizeCompensation;
+            float minSize = 0.036f * qualitySizeScale * bodySizeScale;
+            float maxSize = 0.102f * qualitySizeScale * bodySizeScale;
             main.startSize = new ParticleSystem.MinMaxCurve(minSize, maxSize);
 
-            float minLifetime = 0.23f * Mathf.Lerp(1.15f, 0.92f, quality / 2.0f);
-            float maxLifetime = 0.72f * Mathf.Lerp(1.18f, 0.94f, quality / 2.0f);
+            float minLifetime = 0.21f * Mathf.Lerp(0.98f, 1.18f, qualityNorm);
+            float maxLifetime = 0.64f * Mathf.Lerp(0.98f, 1.20f, qualityNorm);
             main.startLifetime = new ParticleSystem.MinMaxCurve(minLifetime, maxLifetime);
-            main.startSpeed = new ParticleSystem.MinMaxCurve(0.55f, Mathf.Lerp(2.2f, 3.0f, qualityNorm));
-            main.gravityModifier = Mathf.Lerp(0.016f, 0.028f, qualityNorm);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(0.60f, Mathf.Lerp(1.9f, 3.4f, qualityNorm));
+            main.gravityModifier = Mathf.Lerp(0.014f, 0.024f, qualityNorm);
 
             ParticleSystem.ShapeModule shape = particleSystem.shape;
-            shape.angle = Mathf.Lerp(12.5f, 15.5f, qualityNorm);
+            shape.angle = Mathf.Lerp(11.5f, 16.5f, qualityNorm);
             float wheelRadiusVisual = wheelEffectiveRadius;
             float radiusScale = advancedQualityFeatures ? Mathf.Clamp(Mathf.Lerp(0.90f, 1.70f, Mathf.InverseLerp(0.22f, 1.05f, wheelRadiusVisual)), 0.90f, 1.80f) * KerbalFxRuntimeConfig.RadiusScaleMultiplier : 1f;
-            shape.radius = Mathf.Lerp(0.078f, 0.098f, qualityNorm) * radiusScale;
+            shape.radius = Mathf.Lerp(0.062f, 0.132f, qualityNorm) * radiusScale * bodySizeScale;
 
             ParticleSystem.ColorOverLifetimeModule colorOverLifetime = particleSystem.colorOverLifetime;
             Gradient gradient = new Gradient();
@@ -861,7 +1093,7 @@ namespace RoverDustFX
             colorOverLifetime.color = gradient;
 
             ParticleSystem.SizeOverLifetimeModule sizeOverLifetime = particleSystem.sizeOverLifetime;
-            sizeOverLifetime.enabled = quality >= 0.70f;
+            sizeOverLifetime.enabled = quality >= 0.50f;
             if (sizeOverLifetime.enabled)
             {
                 AnimationCurve curve = new AnimationCurve();
@@ -872,7 +1104,7 @@ namespace RoverDustFX
             }
 
             ParticleSystemRenderer renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
-            renderer.maxParticleSize = Mathf.Lerp(0.15f, 0.11f, qualityNorm);
+            renderer.maxParticleSize = Mathf.Lerp(0.11f, 0.19f, qualityNorm);
             ApplyCurrentStartColor();
 
             // If quality changed while stopped, keep module values fresh but do not force play.
@@ -966,9 +1198,16 @@ namespace RoverDustFX
                 }
                 else
                 {
-                    alpha *= Mathf.Pow(light, KerbalFxRuntimeConfig.LightAlphaExponent);
+                    float alphaLight = Mathf.Pow(light, KerbalFxRuntimeConfig.LightAlphaExponent);
+                    alphaLight = Mathf.Lerp(KerbalFxRuntimeConfig.DaylightAlphaFloor, 1f, alphaLight);
+                    alpha *= alphaLight;
                 }
             }
+
+            float bodyVisibility = GetBodyDustVisibilityMultiplier(part != null ? part.vessel : null);
+            float bodyBoostNorm = Mathf.Clamp01((bodyVisibility - 1f) / 0.5f);
+            alpha *= Mathf.Lerp(1f, 1.16f, bodyBoostNorm);
+            alpha = Mathf.Clamp(alpha, 0f, 0.97f);
 
             ParticleSystem.MainModule main = particleSystem.main;
             main.startColor = new Color(currentColor.r, currentColor.g, currentColor.b, alpha);
@@ -982,7 +1221,7 @@ namespace RoverDustFX
             float artificialLight = EvaluateNearbyArtificialLights(worldPoint, surfaceNormal);
 
             // At night (or deep shadow), require meaningful artificial light for visible dust.
-            if (sunLight <= 0.001f && artificialLight < 0.080f)
+            if (sunLight <= 0.001f && artificialLight < 0.055f)
             {
                 return 0f;
             }
@@ -1200,7 +1439,7 @@ namespace RoverDustFX
             float normalFactor = Mathf.Lerp(0.40f, 1f, normalDot);
 
             float strength = light.intensity * attenuation * spotFactor * normalFactor;
-            return Mathf.Clamp01(strength / 1.85f);
+            return Mathf.Clamp01(strength / 1.45f);
         }
 
         private static bool IsLikelyIntentionalLampLight(Light light)
@@ -1213,7 +1452,7 @@ namespace RoverDustFX
             bool fromPart = light.GetComponentInParent<Part>() != null;
             if (fromPart)
             {
-                if (light.range < 2.5f || light.intensity < 0.22f)
+                if (light.range < 1.20f || light.intensity < 0.10f)
                 {
                     return false;
                 }
@@ -1236,7 +1475,7 @@ namespace RoverDustFX
                 return light.range <= 85f && light.intensity <= 8.5f;
             }
 
-            if (light.range > 120f || light.intensity < 0.60f)
+            if (light.range > 120f || light.intensity < 0.35f)
             {
                 return false;
             }
@@ -1280,8 +1519,9 @@ namespace RoverDustFX
         private static float GetWheelDustRateScale(float effectiveRadius)
         {
             float normalized = Mathf.Clamp(effectiveRadius / 0.30f, 0.9f, 3.8f);
-            float scale = Mathf.Pow(normalized, KerbalFxRuntimeConfig.WheelBoostPower);
-            return Mathf.Clamp(scale, 1f, KerbalFxRuntimeConfig.WheelBoostMax);
+            float baseScale = Mathf.Pow(normalized, KerbalFxRuntimeConfig.WheelBoostPower);
+            float amplifiedScale = 1f + (baseScale - 1f) * 1.25f;
+            return Mathf.Clamp(amplifiedScale, 1f, KerbalFxRuntimeConfig.WheelBoostMax * 1.25f);
         }
 
         private static float GetEffectiveWheelRadius(WheelCollider wheelCollider, Part sourcePart)
@@ -1581,6 +1821,16 @@ namespace RoverDustFX
             return body + "|" + biome + "|" + colliderId;
         }
 
+        private static float GetBodyDustVisibilityMultiplier(Vessel vessel)
+        {
+            if (vessel == null || vessel.mainBody == null || string.IsNullOrEmpty(vessel.mainBody.bodyName))
+            {
+                return 1f;
+            }
+
+            return KerbalFxRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
+        }
+
         private static Color GuessDustColor(Vessel vessel)
         {
             string key = vessel.mainBody != null
@@ -1593,7 +1843,7 @@ namespace RoverDustFX
             }
             if (key.Contains("mun"))
             {
-                return new Color(0.66f, 0.66f, 0.68f);
+                return new Color(0.75f, 0.73f, 0.69f);
             }
             if (key.Contains("duna"))
             {
