@@ -1,4 +1,4 @@
-﻿# KerbalFX
+# KerbalFX
 
 Lightweight modular FX framework for Kerbal Space Program.
 
@@ -24,7 +24,9 @@ Current Impact Puffs features:
 - Engine plume-ground dust puffs for launch and powered landing.
 - One-shot touchdown burst for harder landings.
 - Compatible approach with Waterfall (reads real engine output, does not depend on stock plume particles).
-- Supports quality scaling and per-body tuning values through config files.
+- Uses volumetric mode by default, with an optional simplified mode toggle.
+- Supports per-body tuning values through config files.
+- Ongoing WIP tuning for volumetric plume behavior and landing dynamics.
 
 ### KerbalFX - BlastFX (Placeholder)
 Reserved module scaffold for future blast/contact FX work.

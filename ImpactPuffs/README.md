@@ -4,7 +4,7 @@ Ground interaction FX module for launch and landing.
 
 ## What it does
 
-- Adds plume-ground dust puffs for rocket engines near terrain.
+- Adds plume-ground puffs for rocket engines near terrain.
 - Adds one-shot touchdown impact bursts on harder landings.
 - Uses real engine output from `ModuleEngines`, so it stays compatible with Waterfall visual overhauls.
 
@@ -18,5 +18,6 @@ Ground interaction FX module for launch and landing.
 
 ## Notes
 
-- This module is lightweight and FX-only.
+- This module is FX-only.
 - It does not modify engine thrust, physics, or Waterfall plume definitions.
+- In Difficulty Settings, the module has mode toggle: `Use simplified effects`. Use it if you have problems with performance.

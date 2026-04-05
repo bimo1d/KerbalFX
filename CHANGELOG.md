@@ -1,4 +1,10 @@
-﻿## 0.5a
+## 0.5b
+- Impact Puffs volumetric behavior tuning.
+- Reworked engine exhaust direction detection to reduce opposite-side/invalid plume triggering.
+- Retuned plume vs touchdown balance.
+- Updated Impact Puffs docs/localization/config references and rebuilt `KerbalFX.Core.dll`.
+
+## 0.5a
 - Added new module: **KerbalFX - Impact Puffs**.
 - Added engine plume-ground puffs for launch and landing.
 - Added one-shot touchdown burst and tuned splashdown-specific behavior.
