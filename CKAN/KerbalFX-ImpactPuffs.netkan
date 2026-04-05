@@ -1,0 +1,8 @@
+identifier: KerbalFX-ImpactPuffs
+name: KerbalFX - Impact Puffs
+abstract: Engine plume-ground and touchdown dust puffs module for KerbalFX.
+$kref: '#/ckan/github/bimo1d/KerbalFX/asset_match/^KerbalFX-ImpactPuffs-.*\.zip$'
+x_netkan_version_edit: '^[vV]?(?<version>.+)$'
+$vref: '#/ckan/ksp-avc'
+depends:
+  - name: KerbalFX-Core

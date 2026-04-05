@@ -1,4 +1,12 @@
-﻿## 0.4a
+﻿## 0.5a
+- Added new module: **KerbalFX - Impact Puffs**.
+- Added engine plume-ground puffs for launch and landing.
+- Added one-shot touchdown burst and tuned splashdown-specific behavior.
+- Improved landing plume placement to spread farther from vessel center and reduce hull-enveloping clouds.
+- Added/updated localization and config coverage for Impact Puffs.
+- Updated core module slot registry and docs for modular KerbalFX layout.
+
+## 0.4a
 - Tuned body-specific dust visibility multipliers:
   - Increased: Minmus, Pol
   - Reduced: Moho, Vall, Bop, Tylo
@@ -14,4 +22,4 @@
 
 ### KerbalFX UI structure
 KerbalFX is the global section in Difficulty Settings.
-Rover Dust is shown as a module page inside KerbalFX.
+Rover Dust is shown as a module page inside that section.
