@@ -21,8 +21,8 @@ Current Rover Dust features:
 Adds launch/landing dust puffs for engines near terrain and one-shot touchdown bursts.
 
 Current Impact Puffs features:
-- Engine plume-ground dust puffs for launch and powered landing.
-- One-shot touchdown burst for harder landings.
+- Engine plume-ground puffs for launch and landing.
+- One-shot touchdown burst for harder landings. (Very alpha)
 - Compatible approach with Waterfall (reads real engine output, does not depend on stock plume particles).
 - Uses volumetric mode by default, with an optional simplified mode toggle.
 - Supports per-body tuning values through config files.
@@ -65,7 +65,7 @@ Difficulty Settings:
 ## Development status
 
 Public beta.
-A dedicated KSP Forum thread will be added later.
+[KSP Forum thread](https://forum.kerbalspaceprogram.com/topic/230118-wip1125-kerbalfx-lightweight-modular-fx-framework-v05b-rover-dust-impact-puffs/)
 
 ## Disclaimer and License
 
