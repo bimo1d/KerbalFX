@@ -1107,7 +1107,6 @@ namespace RoverDustFX
             renderer.maxParticleSize = Mathf.Lerp(0.11f, 0.19f, qualityNorm);
             ApplyCurrentStartColor();
 
-            // If quality changed while stopped, keep module values fresh but do not force play.
             ParticleSystem.EmissionModule emission = particleSystem.emission;
             if (smoothedRate < 0.01f)
             {
@@ -1220,7 +1219,6 @@ namespace RoverDustFX
             float sunLight = EvaluateSunLighting(vessel, worldPoint, surfaceNormal);
             float artificialLight = EvaluateNearbyArtificialLights(worldPoint, surfaceNormal);
 
-            // At night (or deep shadow), require meaningful artificial light for visible dust.
             if (sunLight <= 0.001f && artificialLight < 0.055f)
             {
                 return 0f;
@@ -1265,7 +1263,6 @@ namespace RoverDustFX
 
             if (best <= 0.01f && vessel != null && vessel.directSunlight)
             {
-                // Fallback for lighting setups where directional lights are not exposed consistently.
                 best = 0.90f;
                 isDayAtPoint = true;
             }
@@ -1277,7 +1274,6 @@ namespace RoverDustFX
 
             if (vessel != null && !vessel.directSunlight)
             {
-                // Keep some dust under cloud shadows, but clearly weaker than direct sunlight.
                 float shadowed = best * KerbalFxRuntimeConfig.ShadowLightFactor;
                 float cloudyDayFloor = geometricSun * 0.22f;
                 best = Mathf.Max(shadowed, cloudyDayFloor);
@@ -1369,7 +1365,7 @@ namespace RoverDustFX
                 return;
             }
 
-            sharedSceneLightsRefreshAt = Time.time + 1.50f;
+            sharedSceneLightsRefreshAt = Time.time + 2.25f;
             sharedSceneLights.Clear();
 
             Light[] foundLights = UnityEngine.Object.FindObjectsOfType<Light>();
@@ -1899,7 +1895,6 @@ namespace RoverDustFX
             s = Mathf.Clamp(s, 0.05f, 0.35f);
             v = Mathf.Clamp(v, 0.20f, 0.86f);
 
-            // Grass/material tints can be very green; push toward dusty hue.
             if (h > 0.20f && h < 0.45f)
             {
                 h = Mathf.Lerp(h, 0.11f, 0.45f);

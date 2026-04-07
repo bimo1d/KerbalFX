@@ -1,3 +1,9 @@
+## 0.5c
+- Reworked Impact Puffs touchdown burst.
+- Improved Impact Puffs with light-aware behavior (effect depends on scene lighting, without unrealistic glow in full darkness).
+- Added performance tuning: reduced Rover Dust scene-light refresh frequency to lower CPU overhead.
+- Rebuilt `KerbalFX.Core.dll` and cleaned up non-essential code.
+
 ## 0.5b
 - Impact Puffs volumetric behavior tuning.
 - Reworked engine exhaust direction detection to reduce opposite-side/invalid plume triggering.
