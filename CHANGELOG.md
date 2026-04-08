@@ -1,3 +1,15 @@
+## 0.5.1
+- Reworked non-simplified touchdown into ring-shock style ground burst.
+- Added non-simplified terrain-aware light response (better behavior in shadowed relief areas). (WIP)
+- Unified non-simplified light logic between volumetric plume and touchdown effects.
+- Tuned non-simplified volumetric brightness in low-light scenes (reduced over-bright look).
+- Touchdown intensity now scales with impact energy (capped at 30 m/s). (WIP)
+- Rebuilt `KerbalFX.Core.dll`.
+
+### Note
+0.5.1 is the final feature-focused release before 0.6.
+Version 0.6 is planned as a technical-debt release only (cleanup/refactor/stability), with no new features.
+
 ## 0.5c
 - Reworked Impact Puffs touchdown burst.
 - Improved Impact Puffs with light-aware behavior (effect depends on scene lighting, without unrealistic glow in full darkness).

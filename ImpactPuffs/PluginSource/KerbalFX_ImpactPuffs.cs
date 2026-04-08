@@ -989,6 +989,16 @@ namespace KerbalFX.ImpactPuffs
         private const float StartupRampDuration = 1.65f;
         private const float IgnitionPrimeDuration = 1.20f;
         private static readonly RaycastHit[] SharedHits = new RaycastHit[24];
+        private static readonly RaycastHit[] SunOcclusionHits = new RaycastHit[16];
+        private static readonly Dictionary<Guid, SunOcclusionCacheEntry> SunOcclusionCache = new Dictionary<Guid, SunOcclusionCacheEntry>();
+
+        private struct SunOcclusionCacheEntry
+        {
+            public bool Occluded;
+            public float ValidUntil;
+            public Vector3 SamplePoint;
+            public Vector3 SunDirection;
+        }
 
         public EngineGroundPuffEmitter(Part part, ModuleEngines engine, Transform thrustTransform)
         {
@@ -1189,6 +1199,12 @@ namespace KerbalFX.ImpactPuffs
             cachedLightFactor = ImpactPuffsConfig.UseSimplifiedEffects
                 ? EvaluateEngineAwareLightFactor(vessel, groundHit.point, groundHit.normal, normalizedThrust)
                 : EvaluateVolumetricLightFactor(vessel, groundHit.point, groundHit.normal, normalizedThrust);
+            if (!ImpactPuffsConfig.UseSimplifiedEffects)
+            {
+                float volumetricLightRate = Mathf.Pow(Mathf.Clamp01(cachedLightFactor), 0.65f);
+                volumetricLightRate = Mathf.Lerp(0.28f, 1f, volumetricLightRate);
+                targetRate *= volumetricLightRate;
+            }
             Vector3 stableNormal = groundHit.normal.sqrMagnitude > 0.0001f ? groundHit.normal.normalized : Vector3.up;
 
             float surfaceOffset = -0.05f;
@@ -1993,8 +2009,8 @@ namespace KerbalFX.ImpactPuffs
 
             float volumetricBoost = ImpactPuffsConfig.UseSimplifiedEffects ? 1.00f : 1.15f;
             float baseAlpha = BaseAlpha * 0.68f * volumetricBoost;
-            float lightMin = 0.18f;
-            float lightMax = 0.84f;
+            float lightMin = ImpactPuffsConfig.UseSimplifiedEffects ? 0.18f : 0.26f;
+            float lightMax = ImpactPuffsConfig.UseSimplifiedEffects ? 0.84f : 0.92f;
             float alpha = baseAlpha * Mathf.Lerp(lightMin, lightMax, Mathf.Clamp01(cachedLightFactor));
             alpha *= Mathf.Lerp(0.92f, 1.12f, Mathf.Clamp01((cachedBodyVisibility - 1f) / 0.75f));
             float alphaCap = 0.60f + (ImpactPuffsConfig.UseSimplifiedEffects ? 0.00f : 0.08f);
@@ -2006,25 +2022,31 @@ namespace KerbalFX.ImpactPuffs
 
         private static float EvaluateEngineAwareLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, float normalizedThrust)
         {
-            float sunLight = EvaluateSunLighting(vessel, worldPoint, surfaceNormal);
-            float engineGlow = Mathf.Lerp(0.15f, 0.88f, Mathf.Clamp01(normalizedThrust));
+            float sunLight = EvaluateSimplifiedSunLighting(vessel, worldPoint, surfaceNormal);
+            float thrust01 = Mathf.Clamp01(normalizedThrust);
+            float engineGlow = Mathf.Lerp(0.01f, 0.11f, Mathf.Pow(thrust01, 0.80f));
             return Mathf.Clamp01(Mathf.Max(sunLight, engineGlow));
         }
 
         private static float EvaluateVolumetricLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, float normalizedThrust)
         {
-            float sunLight = EvaluateSunLighting(vessel, worldPoint, surfaceNormal);
+            float sunLight = EvaluateNonSimplifiedLighting(vessel, worldPoint, surfaceNormal, true);
             float thrust01 = Mathf.Clamp01(normalizedThrust);
-            float engineGlow = Mathf.Lerp(0.0f, 0.06f, Mathf.Pow(thrust01, 1.65f));
+            float engineGlow = Mathf.Lerp(0.0f, 0.020f, Mathf.Pow(thrust01, 2.20f));
             return Mathf.Clamp01(Mathf.Max(sunLight, engineGlow));
         }
 
         internal static float GetSunLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
         {
-            return EvaluateSunLighting(vessel, worldPoint, surfaceNormal);
+            return EvaluateSimplifiedSunLighting(vessel, worldPoint, surfaceNormal);
         }
 
-        private static float EvaluateSunLighting(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
+        internal static float GetTouchdownLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
+        {
+            return EvaluateNonSimplifiedLighting(vessel, worldPoint, surfaceNormal, true);
+        }
+
+        private static float EvaluateNonSimplifiedLighting(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, bool includeTerrainOcclusion)
         {
             if (surfaceNormal.sqrMagnitude < 0.0001f)
             {
@@ -2044,12 +2066,147 @@ namespace KerbalFX.ImpactPuffs
                 return 0f;
             }
 
-            if (vessel != null && vessel.mainBody != null && IsSunOccluded(vessel.mainBody, worldPoint, sunDirection))
+            bool bodyOccluded = vessel != null
+                && vessel.mainBody != null
+                && IsSunOccluded(vessel.mainBody, worldPoint, sunDirection);
+            bool terrainOccluded = includeTerrainOcclusion
+                && !bodyOccluded
+                && IsLocallySunOccluded(vessel, worldPoint, surfaceNormal, sunDirection);
+
+            float litFactor = Mathf.Lerp(0.05f, 1f, Mathf.Pow(ndotl, 0.58f));
+            if (bodyOccluded || terrainOccluded)
             {
-                ndotl *= ImpactPuffsRuntimeConfig.ShadowLightFactor;
+                float shadowStrength = Mathf.Clamp01(ImpactPuffsRuntimeConfig.ShadowLightFactor);
+                float shadowMul = terrainOccluded
+                    ? Mathf.Lerp(0.05f, 0.12f, shadowStrength)
+                    : Mathf.Lerp(0.06f, 0.14f, shadowStrength);
+                if (terrainOccluded)
+                {
+                    shadowMul *= 0.92f;
+                }
+                litFactor *= shadowMul;
+                float shadowCap = terrainOccluded ? 0.10f : 0.18f;
+                litFactor = Mathf.Min(litFactor, shadowCap);
             }
 
-            return Mathf.Clamp01(Mathf.Lerp(0.18f, 1f, ndotl));
+            return Mathf.Clamp01(litFactor);
+        }
+
+        private static float EvaluateSimplifiedSunLighting(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
+        {
+            if (surfaceNormal.sqrMagnitude < 0.0001f)
+            {
+                surfaceNormal = Vector3.up;
+            }
+            surfaceNormal.Normalize();
+
+            Vector3 sunDirection;
+            if (!TryGetSunDirection(worldPoint, out sunDirection))
+            {
+                return 0f;
+            }
+
+            float ndotl = Mathf.Clamp01(Vector3.Dot(surfaceNormal, sunDirection));
+            if (ndotl <= 0f)
+            {
+                return 0f;
+            }
+
+            float litFactor = Mathf.Lerp(0.05f, 1f, Mathf.Pow(ndotl, 0.58f));
+            bool bodyOccluded = vessel != null
+                && vessel.mainBody != null
+                && IsSunOccluded(vessel.mainBody, worldPoint, sunDirection);
+            if (!bodyOccluded)
+            {
+                return Mathf.Clamp01(litFactor);
+            }
+
+            float shadowStrength = Mathf.Clamp01(ImpactPuffsRuntimeConfig.ShadowLightFactor);
+            float shadowMul = Mathf.Lerp(0.06f, 0.16f, shadowStrength);
+            return Mathf.Clamp01(Mathf.Min(litFactor * shadowMul, 0.18f));
+        }
+
+        private static bool IsLocallySunOccluded(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, Vector3 sunDirection)
+        {
+            if (vessel == null || vessel.packed || !vessel.loaded || sunDirection.sqrMagnitude < 0.0001f)
+            {
+                return false;
+            }
+
+            Guid vesselId = vessel.id;
+            float now = Time.time;
+            SunOcclusionCacheEntry cacheEntry;
+            if (SunOcclusionCache.TryGetValue(vesselId, out cacheEntry))
+            {
+                float pointDeltaSq = (cacheEntry.SamplePoint - worldPoint).sqrMagnitude;
+                float directionDot = Vector3.Dot(cacheEntry.SunDirection, sunDirection);
+                if (now <= cacheEntry.ValidUntil && pointDeltaSq <= 9f && directionDot >= 0.995f)
+                {
+                    return cacheEntry.Occluded;
+                }
+            }
+
+            bool occluded = ComputeLocalSunOcclusion(vessel, worldPoint, surfaceNormal, sunDirection);
+            SunOcclusionCacheEntry updatedEntry = new SunOcclusionCacheEntry
+            {
+                Occluded = occluded,
+                ValidUntil = now + (ImpactPuffsConfig.UseSimplifiedEffects ? 0.30f : 0.14f),
+                SamplePoint = worldPoint,
+                SunDirection = sunDirection
+            };
+            SunOcclusionCache[vesselId] = updatedEntry;
+            return occluded;
+        }
+
+        private static bool ComputeLocalSunOcclusion(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, Vector3 sunDirection)
+        {
+            Vector3 normal = surfaceNormal;
+            if (normal.sqrMagnitude < 0.0001f)
+            {
+                normal = Vector3.up;
+            }
+            normal.Normalize();
+
+            Vector3 direction = sunDirection.normalized;
+            Vector3 origin = worldPoint + normal * 0.20f + direction * 0.05f;
+            float maxDistance = 1200f;
+
+            int hitCount = Physics.RaycastNonAlloc(
+                origin,
+                direction,
+                SunOcclusionHits,
+                maxDistance,
+                Physics.DefaultRaycastLayers,
+                QueryTriggerInteraction.Ignore
+            );
+            if (hitCount <= 0)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < hitCount; i++)
+            {
+                RaycastHit hit = SunOcclusionHits[i];
+                if (hit.collider == null || hit.distance <= 0.03f)
+                {
+                    continue;
+                }
+
+                Part hitPart = hit.collider.GetComponentInParent<Part>();
+                if (hitPart != null && hitPart.vessel == vessel)
+                {
+                    continue;
+                }
+
+                if (vessel.rootPart != null && hit.collider.transform != null && hit.collider.transform.IsChildOf(vessel.rootPart.transform))
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
         }
 
         private static bool TryGetSunDirection(Vector3 worldPoint, out Vector3 sunDirection)
@@ -2249,8 +2406,10 @@ namespace KerbalFX.ImpactPuffs
             }
 
             float light01 = Mathf.Clamp01(lightFactor);
-            float visibility = (Mathf.Pow(light01, 1.65f) * 0.34f) + (light01 * 0.05f);
-            float alpha = Mathf.Clamp(visibility * Mathf.Lerp(0.32f, 0.64f, density / 3.2f) * alphaScale * Mathf.Lerp(0.70f, 1.16f, pulse), 0f, 0.30f);
+            float lightCurve = Mathf.Pow(light01, 1.08f);
+            float lightFloor = Mathf.Lerp(0.045f, 0.085f, Mathf.Clamp01(pressureBoost / 1.60f));
+            float visibility = Mathf.Lerp(lightFloor, 1f, lightCurve);
+            float alpha = Mathf.Clamp(visibility * Mathf.Lerp(0.26f, 0.50f, density / 3.2f) * alphaScale * Mathf.Lerp(0.74f, 1.06f, pulse), 0f, 0.27f);
 
             ParticleSystem.MainModule main = ps.main;
             main.startColor = new Color(color.r, color.g, color.b, alpha);
@@ -2385,8 +2544,10 @@ namespace KerbalFX.ImpactPuffs
         private static readonly RaycastHit[] BurstHits = new RaycastHit[32];
         private static readonly Gradient BurstCoreGradient = CreateBurstCoreGradient();
         private static readonly Gradient BurstHazeGradient = CreateBurstHazeGradient();
+        private static readonly Gradient RingShockGradient = CreateRingShockGradient();
         private static readonly AnimationCurve BurstCoreSizeCurve = CreateBurstCoreSizeCurve();
         private static readonly AnimationCurve BurstHazeSizeCurve = CreateBurstHazeSizeCurve();
+        private static readonly AnimationCurve RingShockSizeCurve = CreateRingShockSizeCurve();
 
         public TouchdownBurstEmitter(Vessel vessel)
         {
@@ -2408,12 +2569,21 @@ namespace KerbalFX.ImpactPuffs
                 || vessel.situation == Vessel.Situations.PRELAUNCH
                 || vessel.situation == Vessel.Situations.SPLASHED;
             float descentSpeed = Mathf.Max(0f, (float)(-vessel.verticalSpeed));
-
-            float touchdownSpeedThreshold = Mathf.Max(ImpactPuffsRuntimeConfig.TouchdownMinSpeed * 1.45f, 3.2f);
+            bool useSimplified = ImpactPuffsConfig.UseSimplifiedEffects;
+            float touchdownSpeedThreshold = useSimplified
+                ? Mathf.Max(ImpactPuffsRuntimeConfig.TouchdownMinSpeed * 1.45f, 3.2f)
+                : Mathf.Max(ImpactPuffsRuntimeConfig.TouchdownMinSpeed * 1.20f, 2.8f);
             if (!wasGrounded && grounded && cooldown <= 0f && descentSpeed >= touchdownSpeedThreshold)
             {
-                SpawnBurst(descentSpeed);
-                cooldown = 0.45f;
+                if (useSimplified)
+                {
+                    SpawnBurst(descentSpeed);
+                }
+                else
+                {
+                    SpawnRingShock(descentSpeed);
+                }
+                cooldown = useSimplified ? 0.45f : 0.38f;
             }
 
             wasGrounded = grounded;
@@ -2421,6 +2591,215 @@ namespace KerbalFX.ImpactPuffs
 
         public void Dispose()
         {
+        }
+
+        private static float GetTouchdownEnergy01(float impactSpeed)
+        {
+            float cappedSpeed = Mathf.Clamp(impactSpeed, 0f, 30f);
+            float speed01 = cappedSpeed / 30f;
+            return speed01 * speed01;
+        }
+
+        private void SpawnRingShock(float impactSpeed)
+        {
+            if (vessel == null || vessel.mainBody == null)
+            {
+                return;
+            }
+
+            Vector3 point;
+            Vector3 normal;
+            Collider collider;
+            if (!TryGetGroundPoint(out point, out normal, out collider))
+            {
+                return;
+            }
+
+            if (EngineGroundPuffEmitter.IsInKerbinLaunchsiteZone(vessel))
+            {
+                return;
+            }
+
+            if (EngineGroundPuffEmitter.IsLaunchsiteExcludedSurface(collider))
+            {
+                return;
+            }
+
+            bool splash = vessel.Splashed || vessel.situation == Vessel.Situations.SPLASHED;
+            float quality = EngineGroundPuffEmitter.GetModeQualityScale();
+            float qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
+            float bodyVisibility = ImpactPuffsRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
+            float burstStrength = Mathf.Clamp01(impactSpeed / 10.5f);
+            float touchdownEnergy01 = GetTouchdownEnergy01(impactSpeed);
+            float burstLight = EngineGroundPuffEmitter.GetTouchdownLightFactor(vessel, point, normal);
+            float burstLightVisibility = Mathf.Pow(Mathf.Clamp01(burstLight), 0.90f);
+            float touchdownLightFloor = Mathf.Lerp(0.03f, 0.12f, touchdownEnergy01);
+            float burstLightScale = Mathf.Lerp(touchdownLightFloor, 1f, burstLightVisibility);
+
+            Color color = ImpactPuffsSurfaceColor.GetBaseDustColor(vessel);
+            Color colliderColor;
+            if (ImpactPuffsSurfaceColor.TryGetColliderColor(collider, out colliderColor))
+            {
+                color = ImpactPuffsSurfaceColor.BlendWithColliderColor(color, colliderColor);
+            }
+            color = ImpactPuffsSurfaceColor.NormalizeDustTone(color);
+            color = Color.Lerp(color, new Color(0.90f, 0.90f, 0.89f), 0.08f);
+            if (splash)
+            {
+                color = Color.Lerp(color, new Color(0.93f, 0.94f, 0.95f), 0.14f);
+            }
+
+            float energyRadiusScale = Mathf.Lerp(1.00f, 1.12f, touchdownEnergy01);
+            float energySpreadScale = Mathf.Lerp(1.00f, 1.16f, touchdownEnergy01);
+            float energyLiftScale = Mathf.Lerp(1.00f, 1.10f, touchdownEnergy01);
+            float energyCountScale = Mathf.Lerp(1.00f, 1.32f, touchdownEnergy01);
+            float radiusBase = Mathf.Lerp(0.86f, 2.22f, qualityNorm)
+                * (splash ? 1.24f : 1.00f)
+                * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier
+                * RoverDustFX.KerbalFxRuntimeConfig.RadiusScaleMultiplier
+                * 0.48f
+                * energyRadiusScale;
+            float lateralScale = Mathf.Lerp(
+                0.72f,
+                1.24f,
+                Mathf.InverseLerp(1.0f, 3.0f, ImpactPuffsRuntimeConfig.LateralSpreadMultiplier)
+            );
+            float lateralBase = Mathf.Lerp(0.90f, 2.80f, burstStrength)
+                * Mathf.Lerp(0.92f, 1.16f, qualityNorm)
+                * lateralScale
+                * (splash ? 1.12f : 1.00f)
+                * energySpreadScale;
+            float liftBase = Mathf.Lerp(0.03f, 0.12f, burstStrength)
+                * ImpactPuffsRuntimeConfig.VerticalLiftMultiplier
+                * (splash ? 0.74f : 1.00f)
+                * energyLiftScale;
+            float densityScale = Mathf.Lerp(0.96f, 1.14f, qualityNorm);
+            Vector3 bodyUp = (vessel.CoM - vessel.mainBody.position).normalized;
+            float slopeFactor = 1f - Mathf.Clamp01(Vector3.Dot(normal, bodyUp));
+            float surfaceOffset = (splash ? 0.018f : 0.026f) + slopeFactor * 0.055f + Mathf.Clamp(radiusBase * 0.004f, 0f, 0.018f);
+
+            GameObject root = new GameObject("KerbalFX_ImpactRingShock");
+            root.transform.position = point + normal * surfaceOffset;
+            root.transform.rotation = Quaternion.FromToRotation(Vector3.forward, normal);
+            int fxLayer = vessel.rootPart != null ? vessel.rootPart.gameObject.layer : 0;
+            root.layer = fxLayer;
+
+            float ringAlpha = Mathf.Lerp(splash ? 0.26f : 0.30f, splash ? 0.36f : 0.43f, qualityNorm) * burstLightScale * densityScale * 0.90f;
+            float ringBase =
+                (140f + 460f * burstStrength)
+                * ImpactPuffsRuntimeConfig.TouchdownBurstMultiplier
+                * (splash ? 1.08f : 1.00f)
+                * bodyVisibility
+                * 1.15f
+                * energyCountScale;
+            int ringDustCount = Mathf.RoundToInt(Mathf.Clamp(ringBase, 360f, 4600f));
+            int ringEdgeCount = Mathf.Clamp(Mathf.RoundToInt(ringDustCount * 0.62f), 180, 2800);
+            int ringMistCount = Mathf.Clamp(ringDustCount - ringEdgeCount, 120, 1800);
+
+            Material dustMaterial = ImpactPuffsAssets.GetSharedMaterial();
+            if (dustMaterial == null)
+            {
+                dustMaterial = ImpactPuffsAssets.GetBurstMaterial();
+            }
+
+            ParticleSystem ringEdge = CreateTouchdownLayer(
+                "RingEdge",
+                root.transform,
+                fxLayer,
+                color,
+                ringAlpha,
+                0.16f * Mathf.Lerp(0.94f, 1.18f, qualityNorm) * bodyVisibility,
+                0.64f * Mathf.Lerp(0.94f, 1.18f, qualityNorm) * bodyVisibility,
+                0.54f,
+                (splash ? 1.48f : 1.34f) * Mathf.Lerp(0.96f, 1.14f, qualityNorm),
+                0.00f,
+                0.10f * Mathf.Lerp(0.96f, 1.12f, qualityNorm),
+                0.020f,
+                ringEdgeCount,
+                Mathf.Lerp(splash ? 76f : 74f, splash ? 84f : 82f, qualityNorm),
+                radiusBase * 0.98f,
+                lateralBase * 0.06f,
+                splash ? liftBase * 0.03f : liftBase * 0.06f,
+                splash ? liftBase * 0.10f : liftBase * 0.18f,
+                lateralBase * 1.46f,
+                lateralBase * 2.70f,
+                Mathf.Lerp(0.06f, 0.18f, burstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
+                Mathf.Lerp(0.05f, 0.14f, burstStrength),
+                Mathf.Lerp(0.01f, 0.05f, burstStrength),
+                RingShockGradient,
+                RingShockSizeCurve,
+                Mathf.Lerp(0.78f, 0.98f, qualityNorm),
+                2.2f,
+                0.00f,
+                ParticleSystemRenderMode.Billboard,
+                dustMaterial,
+                true
+            );
+
+            ParticleSystem ringMist = CreateTouchdownLayer(
+                "RingMist",
+                root.transform,
+                fxLayer,
+                Color.Lerp(color, Color.white, 0.06f),
+                ringAlpha * 0.58f,
+                0.28f * Mathf.Lerp(0.96f, 1.22f, qualityNorm) * bodyVisibility,
+                1.04f * Mathf.Lerp(0.96f, 1.22f, qualityNorm) * bodyVisibility,
+                0.80f,
+                (splash ? 2.15f : 1.96f) * Mathf.Lerp(0.98f, 1.18f, qualityNorm),
+                0.01f,
+                0.08f * Mathf.Lerp(0.96f, 1.12f, qualityNorm),
+                0.022f,
+                ringMistCount,
+                Mathf.Lerp(splash ? 72f : 70f, splash ? 80f : 78f, qualityNorm),
+                radiusBase * 0.88f,
+                lateralBase * 0.05f,
+                splash ? liftBase * 0.04f : liftBase * 0.08f,
+                splash ? liftBase * 0.12f : liftBase * 0.22f,
+                lateralBase * 1.04f,
+                lateralBase * 2.00f,
+                Mathf.Lerp(0.04f, 0.14f, burstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
+                Mathf.Lerp(0.04f, 0.12f, burstStrength),
+                Mathf.Lerp(0.00f, 0.04f, burstStrength),
+                RingShockGradient,
+                RingShockSizeCurve,
+                Mathf.Lerp(0.92f, 1.18f, qualityNorm),
+                2.0f,
+                0.08f,
+                ParticleSystemRenderMode.Billboard,
+                dustMaterial,
+                true
+            );
+
+            if (ringEdge != null) ringEdge.Play(true);
+            if (ringMist != null) ringMist.Play(true);
+
+            float ringLifeMax = splash ? 2.55f : 2.30f;
+            UnityEngine.Object.Destroy(root, ringLifeMax + 0.90f);
+
+            if (ImpactPuffsConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
+            {
+                ImpactPuffsLog.DebugLog(Localizer.Format(
+                    ImpactPuffsLoc.LogBurst,
+                    impactSpeed.ToString("F2"),
+                    ringDustCount,
+                    bodyVisibility.ToString("F2")
+                ));
+                ImpactPuffsLog.DebugLog(
+                    "[ImpactPuffs] RingShockDbg speed=" + impactSpeed.ToString("F2", CultureInfo.InvariantCulture)
+                    + " count=" + ringDustCount
+                    + " edge=" + ringEdgeCount
+                    + " mist=" + ringMistCount
+                    + " core=0"
+                    + " radius=" + radiusBase.ToString("F2", CultureInfo.InvariantCulture)
+                    + " lateral=" + lateralBase.ToString("F2", CultureInfo.InvariantCulture)
+                    + " lift=" + liftBase.ToString("F3", CultureInfo.InvariantCulture)
+                    + " offset=" + surfaceOffset.ToString("F3", CultureInfo.InvariantCulture)
+                    + " slope=" + slopeFactor.ToString("F2", CultureInfo.InvariantCulture)
+                    + " alpha=" + ringAlpha.ToString("F2", CultureInfo.InvariantCulture)
+                    + " light=" + burstLightScale.ToString("F2", CultureInfo.InvariantCulture)
+                    + " energy01=" + touchdownEnergy01.ToString("F2", CultureInfo.InvariantCulture)
+                );
+            }
         }
 
         private void SpawnBurst(float impactSpeed)
@@ -2452,9 +2831,12 @@ namespace KerbalFX.ImpactPuffs
             float quality = EngineGroundPuffEmitter.GetModeQualityScale();
             float qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
             float bodyVisibility = ImpactPuffsRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
+            float burstStrength = Mathf.Clamp01(impactSpeed / 11.5f);
+            float touchdownEnergy01 = GetTouchdownEnergy01(impactSpeed);
             float burstLight = EngineGroundPuffEmitter.GetSunLightFactor(vessel, point, normal);
-            float burstLightVisibility = Mathf.Pow(Mathf.Clamp01(burstLight), 0.72f);
-            float burstLightScale = Mathf.Lerp(0.26f, 1.00f, burstLightVisibility);
+            float burstLightVisibility = Mathf.Pow(Mathf.Clamp01(burstLight), 0.88f);
+            float touchdownLightFloor = Mathf.Lerp(0.02f, 0.09f, touchdownEnergy01);
+            float burstLightScale = Mathf.Lerp(touchdownLightFloor, 1f, burstLightVisibility);
 
             Color color = ImpactPuffsSurfaceColor.GetBaseDustColor(vessel);
             Color colliderColor;
@@ -2472,18 +2854,22 @@ namespace KerbalFX.ImpactPuffs
             GameObject burstRoot = new GameObject("KerbalFX_ImpactBurst");
             burstRoot.transform.position = splash ? (point - normal * 0.14f) : (point - normal * 0.08f);
             burstRoot.transform.rotation = Quaternion.FromToRotation(Vector3.up, normal);
-            float burstStrength = Mathf.Clamp01(impactSpeed / 11.5f);
+            float energyRadiusScale = Mathf.Lerp(1.00f, 1.10f, touchdownEnergy01);
+            float energySpreadScale = Mathf.Lerp(1.00f, 1.14f, touchdownEnergy01);
+            float energyLiftScale = Mathf.Lerp(1.00f, 1.10f, touchdownEnergy01);
+            float energyCountScale = Mathf.Lerp(1.00f, 1.28f, touchdownEnergy01);
             float burstBase =
                 (90f + 420f * burstStrength)
                 * ImpactPuffsRuntimeConfig.TouchdownBurstMultiplier
                 * (splash ? 1.08f : 1.00f)
-                * bodyVisibility;
-            float burstParticleMultiplier = Mathf.Lerp(1.06f, 1.40f, burstStrength);
+                * bodyVisibility
+                * energyCountScale;
+            float burstParticleMultiplier = Mathf.Lerp(1.12f, 1.52f, burstStrength);
             int burstCount = Mathf.RoundToInt(
                 Mathf.Clamp(
                     burstBase * burstParticleMultiplier,
-                    120f,
-                    2200f
+                    140f,
+                    5200f
                 )
             );
             float splashRadiusScale = splash ? 1.34f : 1.00f;
@@ -2491,17 +2877,18 @@ namespace KerbalFX.ImpactPuffs
             int fxLayer = vessel.rootPart != null ? vessel.rootPart.gameObject.layer : 0;
             burstRoot.layer = fxLayer;
 
-            int coreCount = Mathf.Clamp(Mathf.RoundToInt(burstCount * 0.56f), 64, 1350);
-            int hazeCount = Mathf.Clamp(burstCount - coreCount, 54, 980);
+            int coreCount = Mathf.Clamp(Mathf.RoundToInt(burstCount * 0.58f), 80, 3000);
+            int hazeCount = Mathf.Clamp(burstCount - coreCount, 64, 2300);
 
             float radiusBase = Mathf.Lerp(0.58f, 1.58f, qualityNorm) * splashRadiusScale
                 * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier
-                * RoverDustFX.KerbalFxRuntimeConfig.RadiusScaleMultiplier;
-            float lateralBase = Mathf.Lerp(0.78f, 2.85f, burstStrength) * ImpactPuffsRuntimeConfig.LateralSpreadMultiplier * (splash ? 1.08f : 1.00f);
-            float liftBase = Mathf.Lerp(0.02f, 0.16f, burstStrength) * ImpactPuffsRuntimeConfig.VerticalLiftMultiplier * (splash ? 0.06f : 0.18f);
-            float alphaDensityScale = Mathf.Lerp(0.96f, 1.24f, qualityNorm);
-            float coreAlpha = Mathf.Lerp(splash ? 0.58f : 0.54f, splash ? 0.78f : 0.74f, qualityNorm) * burstLightScale * alphaDensityScale;
-            float hazeAlpha = coreAlpha * 0.74f * alphaDensityScale;
+                * RoverDustFX.KerbalFxRuntimeConfig.RadiusScaleMultiplier
+                * energyRadiusScale;
+            float lateralBase = Mathf.Lerp(0.78f, 2.85f, burstStrength) * ImpactPuffsRuntimeConfig.LateralSpreadMultiplier * (splash ? 1.08f : 1.00f) * energySpreadScale;
+            float liftBase = Mathf.Lerp(0.015f, 0.14f, burstStrength) * ImpactPuffsRuntimeConfig.VerticalLiftMultiplier * (splash ? 0.05f : 0.16f) * energyLiftScale;
+            float alphaDensityScale = Mathf.Lerp(1.04f, 1.36f, qualityNorm);
+            float coreAlpha = Mathf.Lerp(splash ? 0.62f : 0.58f, splash ? 0.82f : 0.78f, qualityNorm) * burstLightScale * alphaDensityScale;
+            float hazeAlpha = coreAlpha * 0.76f * alphaDensityScale;
             float coreMaxParticleLife = (splash ? 2.30f : 2.20f) * Mathf.Lerp(0.98f, 1.20f, qualityNorm);
             float hazeMaxParticleLife = (splash ? 3.00f : 2.70f) * Mathf.Lerp(0.98f, 1.20f, qualityNorm);
 
@@ -2522,8 +2909,8 @@ namespace KerbalFX.ImpactPuffs
                 Mathf.Lerp(splash ? 86f : 82f, splash ? 94f : 92f, qualityNorm),
                 radiusBase * 0.92f,
                 lateralBase * 1.06f,
-                splash ? 0f : liftBase * 0.03f,
-                splash ? liftBase * 0.02f : liftBase * 0.08f,
+                splash ? 0f : liftBase * 0.022f,
+                splash ? liftBase * 0.015f : liftBase * 0.065f,
                 lateralBase * 0.62f,
                 lateralBase * 1.40f,
                 Mathf.Lerp(0.60f, 1.40f, burstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
@@ -2555,8 +2942,8 @@ namespace KerbalFX.ImpactPuffs
                 Mathf.Lerp(splash ? 90f : 88f, splash ? 98f : 96f, qualityNorm),
                 radiusBase * 1.86f,
                 lateralBase * 1.18f,
-                splash ? 0f : liftBase * 0.02f,
-                splash ? liftBase * 0.03f : liftBase * 0.05f,
+                splash ? 0f : liftBase * 0.015f,
+                splash ? liftBase * 0.022f : liftBase * 0.040f,
                 lateralBase * 1.02f,
                 lateralBase * 2.05f,
                 Mathf.Lerp(0.46f, 1.04f, burstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
@@ -2574,7 +2961,7 @@ namespace KerbalFX.ImpactPuffs
             if (burstCore != null) burstCore.Play(true);
             if (burstHaze != null) burstHaze.Play(true);
 
-            float burstTail = 0.24f;
+            float burstTail = 0.30f;
             float maxLife = Mathf.Max(coreMaxParticleLife + burstTail, hazeMaxParticleLife + burstTail) + 0.80f;
             UnityEngine.Object.Destroy(burstRoot, maxLife);
 
@@ -2586,6 +2973,19 @@ namespace KerbalFX.ImpactPuffs
                     burstCount,
                     bodyVisibility.ToString("F2")
                 ));
+                ImpactPuffsLog.DebugLog(
+                    "[ImpactPuffs] BurstDbg mode=simplified speed=" + impactSpeed.ToString("F2", CultureInfo.InvariantCulture)
+                    + " count=" + burstCount
+                    + " core=" + coreCount
+                    + " haze=" + hazeCount
+                    + " radius=" + radiusBase.ToString("F2", CultureInfo.InvariantCulture)
+                    + " lateral=" + lateralBase.ToString("F2", CultureInfo.InvariantCulture)
+                    + " lift=" + liftBase.ToString("F3", CultureInfo.InvariantCulture)
+                    + " alphaCore=" + coreAlpha.ToString("F2", CultureInfo.InvariantCulture)
+                    + " alphaHaze=" + hazeAlpha.ToString("F2", CultureInfo.InvariantCulture)
+                    + " light=" + burstLightScale.ToString("F2", CultureInfo.InvariantCulture)
+                    + " energy01=" + touchdownEnergy01.ToString("F2", CultureInfo.InvariantCulture)
+                );
             }
         }
 
@@ -2619,7 +3019,8 @@ namespace KerbalFX.ImpactPuffs
             float sortingFudge,
             float shapeRadiusThickness,
             ParticleSystemRenderMode renderMode,
-            Material material
+            Material material,
+            bool useCircleShape = false
         )
         {
             GameObject go = new GameObject("KerbalFX_ImpactBurst_" + name);
@@ -2657,8 +3058,8 @@ namespace KerbalFX.ImpactPuffs
 
             ParticleSystem.ShapeModule shape = ps.shape;
             shape.enabled = true;
-            shape.shapeType = ParticleSystemShapeType.Cone;
-            shape.angle = shapeAngle;
+            shape.shapeType = useCircleShape ? ParticleSystemShapeType.Circle : ParticleSystemShapeType.Cone;
+            shape.angle = useCircleShape ? 0f : shapeAngle;
             shape.radius = shapeRadius;
             shape.radiusThickness = Mathf.Clamp01(shapeRadiusThickness);
 
@@ -2669,6 +3070,15 @@ namespace KerbalFX.ImpactPuffs
             velocity.y = new ParticleSystem.MinMaxCurve(liftMin, liftMax);
             velocity.z = new ParticleSystem.MinMaxCurve(-lateral, lateral);
             velocity.radial = new ParticleSystem.MinMaxCurve(radialMin, radialMax);
+
+            ParticleSystem.LimitVelocityOverLifetimeModule limitVelocity = ps.limitVelocityOverLifetime;
+            limitVelocity.enabled = true;
+            limitVelocity.space = ParticleSystemSimulationSpace.Local;
+            limitVelocity.separateAxes = false;
+            float maxRadial = Mathf.Max(Mathf.Abs(radialMin), Mathf.Abs(radialMax));
+            float speedCap = Mathf.Max(0.20f, Mathf.Max(maxSpeed, maxRadial) * 1.16f);
+            limitVelocity.limit = new ParticleSystem.MinMaxCurve(speedCap);
+            limitVelocity.dampen = 0.46f;
 
             ParticleSystem.ColorOverLifetimeModule colorOverLifetime = ps.colorOverLifetime;
             colorOverLifetime.enabled = true;
@@ -2759,6 +3169,37 @@ namespace KerbalFX.ImpactPuffs
             return curve;
         }
 
+        private static Gradient CreateRingShockGradient()
+        {
+            Gradient gradient = new Gradient();
+            gradient.SetKeys(
+                new GradientColorKey[]
+                {
+                    new GradientColorKey(Color.white, 0f),
+                    new GradientColorKey(Color.white, 1f)
+                },
+                new GradientAlphaKey[]
+                {
+                    new GradientAlphaKey(0.68f, 0f),
+                    new GradientAlphaKey(0.46f, 0.16f),
+                    new GradientAlphaKey(0.22f, 0.52f),
+                    new GradientAlphaKey(0.06f, 0.82f),
+                    new GradientAlphaKey(0f, 1f)
+                }
+            );
+            return gradient;
+        }
+
+        private static AnimationCurve CreateRingShockSizeCurve()
+        {
+            AnimationCurve curve = new AnimationCurve();
+            curve.AddKey(0f, 0.44f);
+            curve.AddKey(0.20f, 0.94f);
+            curve.AddKey(0.62f, 1.34f);
+            curve.AddKey(1f, 0.60f);
+            return curve;
+        }
+
         private bool TryGetGroundPoint(out Vector3 point, out Vector3 normal, out Collider collider)
         {
             point = Vector3.zero;
@@ -2824,6 +3265,25 @@ namespace KerbalFX.ImpactPuffs
                 if (hitPart != null && hitPart.vessel == vessel)
                 {
                     continue;
+                }
+
+                if (vessel != null && vessel.rootPart != null)
+                {
+                    Transform rootTransform = vessel.rootPart.transform;
+                    if (rootTransform != null && candidate.collider.transform != null && candidate.collider.transform.IsChildOf(rootTransform))
+                    {
+                        continue;
+                    }
+                }
+
+                Rigidbody hitBody = candidate.rigidbody;
+                if (hitBody != null)
+                {
+                    Part rbPart = hitBody.GetComponentInParent<Part>();
+                    if (rbPart != null && rbPart.vessel == vessel)
+                    {
+                        continue;
+                    }
                 }
 
                 if (candidate.distance < bestDistance)
@@ -3069,6 +3529,7 @@ namespace KerbalFX.ImpactPuffs
             sharedBurstTexture.Apply(false, true);
             return sharedBurstTexture;
         }
+
     }
 }
 
