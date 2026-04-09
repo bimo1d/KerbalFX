@@ -1,3 +1,12 @@
+## 0.6a
+- Refactored Rover Dust source layout into smaller focused runtime files:
+  - controller/bootstrap
+  - wheel emitter logic
+  - shared asset helpers
+- Reduced code complexity and cleaned up internal structure for easier maintenance.
+- Preserved existing Rover Dust behavior and Difficulty Settings compatibility.
+- No gameplay-facing tuning changes in this step.
+
 ## 0.5.1
 - Reworked non-simplified touchdown into ring-shock style ground burst.
 - Added non-simplified terrain-aware light response (better behavior in shadowed relief areas). (WIP)
