@@ -1,3 +1,10 @@
+## 0.6b
+- New module: **BlastFX** (separator pyro-ring FX only for now).
+- Continued technical-debt cleanup: split large runtime code into focused source files for Impact Puffs.
+- Standardized module docs/config comments/localization wording to a single KerbalFX style.
+- Expanded Difficulty Settings/localization coverage for module toggles and debug messages.
+- Preserved lightweight design goals while improving maintainability and diagnostics.
+
 ## 0.6a
 - Refactored Rover Dust source layout into smaller focused runtime files:
   - controller/bootstrap

@@ -1,16 +1,17 @@
-﻿# KerbalFX - Impact Puffs
+# KerbalFX - Impact Puffs
 
 Ground interaction FX module for launch and landing.
 
 ## What it does
 
-- Adds plume-ground puffs for rocket engines near terrain.
+- Adds engine plume-ground puffs near terrain.
 - Adds one-shot touchdown impact bursts on harder landings.
-- Uses real engine output from `ModuleEngines`, so it stays compatible with Waterfall visual overhauls.
+- Supports non-simplified (default) and simplified modes.
+- Uses real engine output from `ModuleEngines`, so it stays compatible with Waterfall.
 
 ## Depends on
 
-- KerbalFX Core
+- `KerbalFX Core`
 
 ## Config
 
@@ -18,6 +19,5 @@ Ground interaction FX module for launch and landing.
 
 ## Notes
 
-- This module is FX-only.
-- It does not modify engine thrust, physics, or Waterfall plume definitions.
-- In Difficulty Settings, the module has mode toggle: `Use simplified effects`. Use it if you have problems with performance.
+- Designed as an FX-only module.
+- Does not modify engine thrust, vessel physics, or Waterfall plume definitions.
