@@ -21,6 +21,47 @@ namespace KerbalFX.ImpactPuffs
             public int FxLayer;
         }
 
+        private struct TouchdownLayerOptions
+        {
+            public string Name;
+            public Transform Parent;
+            public int Layer;
+            public Color Color;
+            public float Alpha;
+            public float MinSize;
+            public float MaxSize;
+            public float MinLife;
+            public float MaxLife;
+            public float MinSpeed;
+            public float MaxSpeed;
+            public float Gravity;
+            public int BurstCount;
+            public float ShapeAngle;
+            public float ShapeRadius;
+            public float Lateral;
+            public float LiftMin;
+            public float LiftMax;
+            public float RadialMin;
+            public float RadialMax;
+            public float NoiseStrength;
+            public float NoiseFrequency;
+            public float NoiseScroll;
+            public Gradient Gradient;
+            public AnimationCurve SizeCurve;
+            public float MaxParticleSize;
+            public float SortingFudge;
+            public float ShapeRadiusThickness;
+            public ParticleSystemRenderMode RenderMode;
+            public Material Material;
+            public bool UseCircleShape;
+        }
+
+        private const float SimplifiedCooldown = 0.45f;
+        private const float VolumetricCooldown = 0.38f;
+        private const float MaxImpactSpeed = 30f;
+        private const float BurstRayMaxDistance = 14f;
+        private const float BurstRayOriginOffset = 3.0f;
+
         private readonly Vessel vessel;
         private bool wasGrounded;
         private float cooldown;
@@ -49,8 +90,7 @@ namespace KerbalFX.ImpactPuffs
 
             bool grounded = vessel.Landed
                 || vessel.Splashed
-                || vessel.situation == Vessel.Situations.PRELAUNCH
-                || vessel.situation == Vessel.Situations.SPLASHED;
+                || vessel.situation == Vessel.Situations.PRELAUNCH;
             float descentSpeed = Mathf.Max(0f, (float)(-vessel.verticalSpeed));
             bool useSimplified = ImpactPuffsConfig.UseSimplifiedEffects;
             float touchdownSpeedThreshold = useSimplified
@@ -66,7 +106,7 @@ namespace KerbalFX.ImpactPuffs
                 {
                     SpawnRingShock(descentSpeed);
                 }
-                cooldown = useSimplified ? 0.45f : 0.38f;
+                cooldown = useSimplified ? SimplifiedCooldown : VolumetricCooldown;
             }
 
             wasGrounded = grounded;
@@ -78,8 +118,8 @@ namespace KerbalFX.ImpactPuffs
 
         private static float GetTouchdownEnergy01(float impactSpeed)
         {
-            float cappedSpeed = Mathf.Clamp(impactSpeed, 0f, 30f);
-            float speed01 = cappedSpeed / 30f;
+            float cappedSpeed = Mathf.Clamp(impactSpeed, 0f, MaxImpactSpeed);
+            float speed01 = cappedSpeed / MaxImpactSpeed;
             return speed01 * speed01;
         }
 
@@ -157,14 +197,14 @@ namespace KerbalFX.ImpactPuffs
 
         private Color ResolveTouchdownDustColor(Collider collider, bool splash, float baseWhiten, float splashWhiten)
         {
-            Color color = ImpactPuffsSurfaceColor.GetBaseDustColor(vessel);
+            Color color = KerbalFxSurfaceColor.GetBaseDustColor(vessel);
             Color colliderColor;
-            if (ImpactPuffsSurfaceColor.TryGetColliderColor(collider, out colliderColor))
+            if (KerbalFxSurfaceColor.TryGetColliderColor(collider, out colliderColor))
             {
-                color = ImpactPuffsSurfaceColor.BlendWithColliderColor(color, colliderColor);
+                color = KerbalFxSurfaceColor.BlendWithColliderColor(color, colliderColor);
             }
 
-            color = ImpactPuffsSurfaceColor.NormalizeDustTone(color);
+            color = KerbalFxSurfaceColor.NormalizeDustTone(color);
             color = Color.Lerp(color, new Color(0.90f, 0.90f, 0.89f), baseWhiten);
             if (splash)
             {
@@ -196,9 +236,9 @@ namespace KerbalFX.ImpactPuffs
 
             ImpactPuffsLog.DebugLog(Localizer.Format(
                 ImpactPuffsLoc.LogBurst,
-                impactSpeed.ToString("F2"),
+                impactSpeed.ToString("F2", CultureInfo.InvariantCulture),
                 ringDustCount,
-                bodyVisibility.ToString("F2")
+                bodyVisibility.ToString("F2", CultureInfo.InvariantCulture)
             ));
             ImpactPuffsLog.DebugLog(Localizer.Format(
                 ImpactPuffsLoc.LogRingShockDebug,
@@ -238,9 +278,9 @@ namespace KerbalFX.ImpactPuffs
 
             ImpactPuffsLog.DebugLog(Localizer.Format(
                 ImpactPuffsLoc.LogBurst,
-                impactSpeed.ToString("F2"),
+                impactSpeed.ToString("F2", CultureInfo.InvariantCulture),
                 burstCount,
-                bodyVisibility.ToString("F2")
+                bodyVisibility.ToString("F2", CultureInfo.InvariantCulture)
             ));
             ImpactPuffsLog.DebugLog(Localizer.Format(
                 ImpactPuffsLoc.LogBurstDebug,
@@ -318,73 +358,75 @@ namespace KerbalFX.ImpactPuffs
                 dustMaterial = ImpactPuffsAssets.GetBurstMaterial();
             }
 
-            ParticleSystem ringEdge = CreateTouchdownLayer(
-                "RingEdge",
-                root.transform,
-                context.FxLayer,
-                context.Color,
-                ringAlpha,
-                0.16f * Mathf.Lerp(0.94f, 1.18f, context.QualityNorm) * context.BodyVisibility,
-                0.64f * Mathf.Lerp(0.94f, 1.18f, context.QualityNorm) * context.BodyVisibility,
-                0.54f,
-                (context.Splash ? 1.48f : 1.34f) * Mathf.Lerp(0.96f, 1.14f, context.QualityNorm),
-                0.00f,
-                0.10f * Mathf.Lerp(0.96f, 1.12f, context.QualityNorm),
-                0.020f,
-                ringEdgeCount,
-                Mathf.Lerp(context.Splash ? 76f : 74f, context.Splash ? 84f : 82f, context.QualityNorm),
-                radiusBase * 0.98f,
-                lateralBase * 0.06f,
-                context.Splash ? liftBase * 0.03f : liftBase * 0.06f,
-                context.Splash ? liftBase * 0.10f : liftBase * 0.18f,
-                lateralBase * 1.46f,
-                lateralBase * 2.70f,
-                Mathf.Lerp(0.06f, 0.18f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
-                Mathf.Lerp(0.05f, 0.14f, context.BurstStrength),
-                Mathf.Lerp(0.01f, 0.05f, context.BurstStrength),
-                RingShockGradient,
-                RingShockSizeCurve,
-                Mathf.Lerp(0.78f, 0.98f, context.QualityNorm),
-                2.2f,
-                0.00f,
-                ParticleSystemRenderMode.Billboard,
-                dustMaterial,
-                true
-            );
+            ParticleSystem ringEdge = CreateTouchdownLayer(new TouchdownLayerOptions
+            {
+                Name = "RingEdge",
+                Parent = root.transform,
+                Layer = context.FxLayer,
+                Color = context.Color,
+                Alpha = ringAlpha,
+                MinSize = 0.16f * Mathf.Lerp(0.94f, 1.18f, context.QualityNorm) * context.BodyVisibility,
+                MaxSize = 0.64f * Mathf.Lerp(0.94f, 1.18f, context.QualityNorm) * context.BodyVisibility,
+                MinLife = 0.54f,
+                MaxLife = (context.Splash ? 1.48f : 1.34f) * Mathf.Lerp(0.96f, 1.14f, context.QualityNorm),
+                MinSpeed = 0.00f,
+                MaxSpeed = 0.10f * Mathf.Lerp(0.96f, 1.12f, context.QualityNorm),
+                Gravity = 0.020f,
+                BurstCount = ringEdgeCount,
+                ShapeAngle = Mathf.Lerp(context.Splash ? 76f : 74f, context.Splash ? 84f : 82f, context.QualityNorm),
+                ShapeRadius = radiusBase * 0.98f,
+                Lateral = lateralBase * 0.06f,
+                LiftMin = context.Splash ? liftBase * 0.03f : liftBase * 0.06f,
+                LiftMax = context.Splash ? liftBase * 0.10f : liftBase * 0.18f,
+                RadialMin = lateralBase * 1.46f,
+                RadialMax = lateralBase * 2.70f,
+                NoiseStrength = Mathf.Lerp(0.06f, 0.18f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
+                NoiseFrequency = Mathf.Lerp(0.05f, 0.14f, context.BurstStrength),
+                NoiseScroll = Mathf.Lerp(0.01f, 0.05f, context.BurstStrength),
+                Gradient = RingShockGradient,
+                SizeCurve = RingShockSizeCurve,
+                MaxParticleSize = Mathf.Lerp(0.78f, 0.98f, context.QualityNorm),
+                SortingFudge = 2.2f,
+                ShapeRadiusThickness = 0.00f,
+                RenderMode = ParticleSystemRenderMode.Billboard,
+                Material = dustMaterial,
+                UseCircleShape = true
+            });
 
-            ParticleSystem ringMist = CreateTouchdownLayer(
-                "RingMist",
-                root.transform,
-                context.FxLayer,
-                Color.Lerp(context.Color, Color.white, 0.06f),
-                ringAlpha * 0.58f,
-                0.28f * Mathf.Lerp(0.96f, 1.22f, context.QualityNorm) * context.BodyVisibility,
-                1.04f * Mathf.Lerp(0.96f, 1.22f, context.QualityNorm) * context.BodyVisibility,
-                0.80f,
-                (context.Splash ? 2.15f : 1.96f) * Mathf.Lerp(0.98f, 1.18f, context.QualityNorm),
-                0.01f,
-                0.08f * Mathf.Lerp(0.96f, 1.12f, context.QualityNorm),
-                0.022f,
-                ringMistCount,
-                Mathf.Lerp(context.Splash ? 72f : 70f, context.Splash ? 80f : 78f, context.QualityNorm),
-                radiusBase * 0.88f,
-                lateralBase * 0.05f,
-                context.Splash ? liftBase * 0.04f : liftBase * 0.08f,
-                context.Splash ? liftBase * 0.12f : liftBase * 0.22f,
-                lateralBase * 1.04f,
-                lateralBase * 2.00f,
-                Mathf.Lerp(0.04f, 0.14f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
-                Mathf.Lerp(0.04f, 0.12f, context.BurstStrength),
-                Mathf.Lerp(0.00f, 0.04f, context.BurstStrength),
-                RingShockGradient,
-                RingShockSizeCurve,
-                Mathf.Lerp(0.92f, 1.18f, context.QualityNorm),
-                2.0f,
-                0.08f,
-                ParticleSystemRenderMode.Billboard,
-                dustMaterial,
-                true
-            );
+            ParticleSystem ringMist = CreateTouchdownLayer(new TouchdownLayerOptions
+            {
+                Name = "RingMist",
+                Parent = root.transform,
+                Layer = context.FxLayer,
+                Color = Color.Lerp(context.Color, Color.white, 0.06f),
+                Alpha = ringAlpha * 0.58f,
+                MinSize = 0.28f * Mathf.Lerp(0.96f, 1.22f, context.QualityNorm) * context.BodyVisibility,
+                MaxSize = 1.04f * Mathf.Lerp(0.96f, 1.22f, context.QualityNorm) * context.BodyVisibility,
+                MinLife = 0.80f,
+                MaxLife = (context.Splash ? 2.15f : 1.96f) * Mathf.Lerp(0.98f, 1.18f, context.QualityNorm),
+                MinSpeed = 0.01f,
+                MaxSpeed = 0.08f * Mathf.Lerp(0.96f, 1.12f, context.QualityNorm),
+                Gravity = 0.022f,
+                BurstCount = ringMistCount,
+                ShapeAngle = Mathf.Lerp(context.Splash ? 72f : 70f, context.Splash ? 80f : 78f, context.QualityNorm),
+                ShapeRadius = radiusBase * 0.88f,
+                Lateral = lateralBase * 0.05f,
+                LiftMin = context.Splash ? liftBase * 0.04f : liftBase * 0.08f,
+                LiftMax = context.Splash ? liftBase * 0.12f : liftBase * 0.22f,
+                RadialMin = lateralBase * 1.04f,
+                RadialMax = lateralBase * 2.00f,
+                NoiseStrength = Mathf.Lerp(0.04f, 0.14f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
+                NoiseFrequency = Mathf.Lerp(0.04f, 0.12f, context.BurstStrength),
+                NoiseScroll = Mathf.Lerp(0.00f, 0.04f, context.BurstStrength),
+                Gradient = RingShockGradient,
+                SizeCurve = RingShockSizeCurve,
+                MaxParticleSize = Mathf.Lerp(0.92f, 1.18f, context.QualityNorm),
+                SortingFudge = 2.0f,
+                ShapeRadiusThickness = 0.08f,
+                RenderMode = ParticleSystemRenderMode.Billboard,
+                Material = dustMaterial,
+                UseCircleShape = true
+            });
 
             PlayIfExists(ringEdge);
             PlayIfExists(ringMist);
@@ -456,71 +498,73 @@ namespace KerbalFX.ImpactPuffs
             float coreMaxParticleLife = (context.Splash ? 2.30f : 2.20f) * Mathf.Lerp(0.98f, 1.20f, context.QualityNorm);
             float hazeMaxParticleLife = (context.Splash ? 3.00f : 2.70f) * Mathf.Lerp(0.98f, 1.20f, context.QualityNorm);
 
-            ParticleSystem burstCore = CreateTouchdownLayer(
-                "Core",
-                burstRoot.transform,
-                context.FxLayer,
-                context.Color,
-                coreAlpha,
-                0.058f * Mathf.Lerp(0.92f, 1.18f, context.QualityNorm) * context.BodyVisibility * 1.45f,
-                0.19f * Mathf.Lerp(0.92f, 1.18f, context.QualityNorm) * context.BodyVisibility * 1.45f,
-                0.46f,
-                coreMaxParticleLife,
-                0.06f,
-                0.76f * Mathf.Lerp(0.98f, 1.20f, context.QualityNorm),
-                0.030f,
-                coreCount,
-                Mathf.Lerp(context.Splash ? 86f : 82f, context.Splash ? 94f : 92f, context.QualityNorm),
-                radiusBase * 0.92f,
-                lateralBase * 1.06f,
-                context.Splash ? 0f : liftBase * 0.022f,
-                context.Splash ? liftBase * 0.015f : liftBase * 0.065f,
-                lateralBase * 0.62f,
-                lateralBase * 1.40f,
-                Mathf.Lerp(0.60f, 1.40f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
-                Mathf.Lerp(0.26f, 0.72f, context.BurstStrength),
-                Mathf.Lerp(0.10f, 0.48f, context.BurstStrength),
-                BurstCoreGradient,
-                BurstCoreSizeCurve,
-                Mathf.Lerp(0.72f, 1.04f, context.QualityNorm),
-                2.6f,
-                0.82f,
-                ParticleSystemRenderMode.Billboard,
-                material
-            );
+            ParticleSystem burstCore = CreateTouchdownLayer(new TouchdownLayerOptions
+            {
+                Name = "Core",
+                Parent = burstRoot.transform,
+                Layer = context.FxLayer,
+                Color = context.Color,
+                Alpha = coreAlpha,
+                MinSize = 0.058f * Mathf.Lerp(0.92f, 1.18f, context.QualityNorm) * context.BodyVisibility * 1.45f,
+                MaxSize = 0.19f * Mathf.Lerp(0.92f, 1.18f, context.QualityNorm) * context.BodyVisibility * 1.45f,
+                MinLife = 0.46f,
+                MaxLife = coreMaxParticleLife,
+                MinSpeed = 0.06f,
+                MaxSpeed = 0.76f * Mathf.Lerp(0.98f, 1.20f, context.QualityNorm),
+                Gravity = 0.030f,
+                BurstCount = coreCount,
+                ShapeAngle = Mathf.Lerp(context.Splash ? 86f : 82f, context.Splash ? 94f : 92f, context.QualityNorm),
+                ShapeRadius = radiusBase * 0.92f,
+                Lateral = lateralBase * 1.06f,
+                LiftMin = context.Splash ? 0f : liftBase * 0.022f,
+                LiftMax = context.Splash ? liftBase * 0.015f : liftBase * 0.065f,
+                RadialMin = lateralBase * 0.62f,
+                RadialMax = lateralBase * 1.40f,
+                NoiseStrength = Mathf.Lerp(0.60f, 1.40f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
+                NoiseFrequency = Mathf.Lerp(0.26f, 0.72f, context.BurstStrength),
+                NoiseScroll = Mathf.Lerp(0.10f, 0.48f, context.BurstStrength),
+                Gradient = BurstCoreGradient,
+                SizeCurve = BurstCoreSizeCurve,
+                MaxParticleSize = Mathf.Lerp(0.72f, 1.04f, context.QualityNorm),
+                SortingFudge = 2.6f,
+                ShapeRadiusThickness = 0.82f,
+                RenderMode = ParticleSystemRenderMode.Billboard,
+                Material = material
+            });
 
-            ParticleSystem burstHaze = CreateTouchdownLayer(
-                "Haze",
-                burstRoot.transform,
-                context.FxLayer,
-                Color.Lerp(context.Color, Color.white, 0.02f),
-                hazeAlpha,
-                0.090f * Mathf.Lerp(0.94f, 1.20f, context.QualityNorm) * context.BodyVisibility * 1.42f,
-                0.30f * Mathf.Lerp(0.94f, 1.20f, context.QualityNorm) * context.BodyVisibility * 1.42f,
-                0.72f,
-                hazeMaxParticleLife,
-                0.01f,
-                0.42f * Mathf.Lerp(0.96f, 1.14f, context.QualityNorm),
-                0.022f,
-                hazeCount,
-                Mathf.Lerp(context.Splash ? 90f : 88f, context.Splash ? 98f : 96f, context.QualityNorm),
-                radiusBase * 1.86f,
-                lateralBase * 1.18f,
-                context.Splash ? 0f : liftBase * 0.015f,
-                context.Splash ? liftBase * 0.022f : liftBase * 0.040f,
-                lateralBase * 1.02f,
-                lateralBase * 2.05f,
-                Mathf.Lerp(0.46f, 1.04f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
-                Mathf.Lerp(0.20f, 0.60f, context.BurstStrength),
-                Mathf.Lerp(0.08f, 0.38f, context.BurstStrength),
-                BurstHazeGradient,
-                BurstHazeSizeCurve,
-                Mathf.Lerp(0.80f, 1.08f, context.QualityNorm),
-                2.3f,
-                0.10f,
-                ParticleSystemRenderMode.HorizontalBillboard,
-                material
-            );
+            ParticleSystem burstHaze = CreateTouchdownLayer(new TouchdownLayerOptions
+            {
+                Name = "Haze",
+                Parent = burstRoot.transform,
+                Layer = context.FxLayer,
+                Color = Color.Lerp(context.Color, Color.white, 0.02f),
+                Alpha = hazeAlpha,
+                MinSize = 0.090f * Mathf.Lerp(0.94f, 1.20f, context.QualityNorm) * context.BodyVisibility * 1.42f,
+                MaxSize = 0.30f * Mathf.Lerp(0.94f, 1.20f, context.QualityNorm) * context.BodyVisibility * 1.42f,
+                MinLife = 0.72f,
+                MaxLife = hazeMaxParticleLife,
+                MinSpeed = 0.01f,
+                MaxSpeed = 0.42f * Mathf.Lerp(0.96f, 1.14f, context.QualityNorm),
+                Gravity = 0.022f,
+                BurstCount = hazeCount,
+                ShapeAngle = Mathf.Lerp(context.Splash ? 90f : 88f, context.Splash ? 98f : 96f, context.QualityNorm),
+                ShapeRadius = radiusBase * 1.86f,
+                Lateral = lateralBase * 1.18f,
+                LiftMin = context.Splash ? 0f : liftBase * 0.015f,
+                LiftMax = context.Splash ? liftBase * 0.022f : liftBase * 0.040f,
+                RadialMin = lateralBase * 1.02f,
+                RadialMax = lateralBase * 2.05f,
+                NoiseStrength = Mathf.Lerp(0.46f, 1.04f, context.BurstStrength) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier,
+                NoiseFrequency = Mathf.Lerp(0.20f, 0.60f, context.BurstStrength),
+                NoiseScroll = Mathf.Lerp(0.08f, 0.38f, context.BurstStrength),
+                Gradient = BurstHazeGradient,
+                SizeCurve = BurstHazeSizeCurve,
+                MaxParticleSize = Mathf.Lerp(0.80f, 1.08f, context.QualityNorm),
+                SortingFudge = 2.3f,
+                ShapeRadiusThickness = 0.10f,
+                RenderMode = ParticleSystemRenderMode.HorizontalBillboard,
+                Material = material
+            });
 
             PlayIfExists(burstCore);
             PlayIfExists(burstHaze);
@@ -544,65 +588,33 @@ namespace KerbalFX.ImpactPuffs
                 context.TouchdownEnergy01);
         }
 
-        private static ParticleSystem CreateTouchdownLayer(
-            string name,
-            Transform parent,
-            int layer,
-            Color color,
-            float alpha,
-            float minSize,
-            float maxSize,
-            float minLife,
-            float maxLife,
-            float minSpeed,
-            float maxSpeed,
-            float gravity,
-            int burstCount,
-            float shapeAngle,
-            float shapeRadius,
-            float lateral,
-            float liftMin,
-            float liftMax,
-            float radialMin,
-            float radialMax,
-            float noiseStrength,
-            float noiseFrequency,
-            float noiseScroll,
-            Gradient gradient,
-            AnimationCurve sizeCurve,
-            float maxParticleSize,
-            float sortingFudge,
-            float shapeRadiusThickness,
-            ParticleSystemRenderMode renderMode,
-            Material material,
-            bool useCircleShape = false
-        )
+        private static ParticleSystem CreateTouchdownLayer(TouchdownLayerOptions o)
         {
-            GameObject go = new GameObject("KerbalFX_ImpactBurst_" + name);
-            go.transform.SetParent(parent, false);
+            GameObject go = new GameObject("KerbalFX_ImpactBurst_" + o.Name);
+            go.transform.SetParent(o.Parent, false);
             go.transform.localPosition = Vector3.zero;
             go.transform.localRotation = Quaternion.identity;
-            go.layer = layer;
+            go.layer = o.Layer;
 
             ParticleSystem ps = go.AddComponent<ParticleSystem>();
             ParticleSystem.MainModule main = ps.main;
             main.loop = false;
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
-            main.startRotation = new ParticleSystem.MinMaxCurve(-3.14159f, 3.14159f);
-            main.startColor = new Color(color.r, color.g, color.b, Mathf.Clamp01(alpha));
-            main.startSize = new ParticleSystem.MinMaxCurve(minSize, maxSize);
-            main.startLifetime = new ParticleSystem.MinMaxCurve(minLife, maxLife);
-            main.startSpeed = new ParticleSystem.MinMaxCurve(minSpeed, maxSpeed);
-            main.gravityModifier = gravity;
+            main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
+            main.startColor = new Color(o.Color.r, o.Color.g, o.Color.b, Mathf.Clamp01(o.Alpha));
+            main.startSize = new ParticleSystem.MinMaxCurve(o.MinSize, o.MaxSize);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(o.MinLife, o.MaxLife);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(o.MinSpeed, o.MaxSpeed);
+            main.gravityModifier = o.Gravity;
             main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(36000f * ImpactPuffsRuntimeConfig.MaxParticlesMultiplier * ImpactPuffsRuntimeConfig.SharedMaxParticlesMultiplier, 6000f, 360000f));
 
             ParticleSystem.EmissionModule emission = ps.emission;
             emission.enabled = true;
-            short burstPrimary = (short)Mathf.Clamp(Mathf.RoundToInt(burstCount * 0.40f), 1, short.MaxValue);
-            short burstSecondary = (short)Mathf.Clamp(Mathf.RoundToInt(burstCount * 0.28f), 1, short.MaxValue);
-            short burstTertiary = (short)Mathf.Clamp(Mathf.RoundToInt(burstCount * 0.20f), 1, short.MaxValue);
-            short burstQuaternary = (short)Mathf.Clamp(Mathf.RoundToInt(burstCount * 0.12f), 1, short.MaxValue);
+            short burstPrimary = (short)Mathf.Clamp(Mathf.RoundToInt(o.BurstCount * 0.40f), 1, short.MaxValue);
+            short burstSecondary = (short)Mathf.Clamp(Mathf.RoundToInt(o.BurstCount * 0.28f), 1, short.MaxValue);
+            short burstTertiary = (short)Mathf.Clamp(Mathf.RoundToInt(o.BurstCount * 0.20f), 1, short.MaxValue);
+            short burstQuaternary = (short)Mathf.Clamp(Mathf.RoundToInt(o.BurstCount * 0.12f), 1, short.MaxValue);
             emission.SetBursts(new ParticleSystem.Burst[]
             {
                 new ParticleSystem.Burst(0f, burstPrimary),
@@ -613,50 +625,50 @@ namespace KerbalFX.ImpactPuffs
 
             ParticleSystem.ShapeModule shape = ps.shape;
             shape.enabled = true;
-            shape.shapeType = useCircleShape ? ParticleSystemShapeType.Circle : ParticleSystemShapeType.Cone;
-            shape.angle = useCircleShape ? 0f : shapeAngle;
-            shape.radius = shapeRadius;
-            shape.radiusThickness = Mathf.Clamp01(shapeRadiusThickness);
+            shape.shapeType = o.UseCircleShape ? ParticleSystemShapeType.Circle : ParticleSystemShapeType.Cone;
+            shape.angle = o.UseCircleShape ? 0f : o.ShapeAngle;
+            shape.radius = o.ShapeRadius;
+            shape.radiusThickness = Mathf.Clamp01(o.ShapeRadiusThickness);
 
             ParticleSystem.VelocityOverLifetimeModule velocity = ps.velocityOverLifetime;
             velocity.enabled = true;
             velocity.space = ParticleSystemSimulationSpace.Local;
-            velocity.x = new ParticleSystem.MinMaxCurve(-lateral, lateral);
-            velocity.y = new ParticleSystem.MinMaxCurve(liftMin, liftMax);
-            velocity.z = new ParticleSystem.MinMaxCurve(-lateral, lateral);
-            velocity.radial = new ParticleSystem.MinMaxCurve(radialMin, radialMax);
+            velocity.x = new ParticleSystem.MinMaxCurve(-o.Lateral, o.Lateral);
+            velocity.y = new ParticleSystem.MinMaxCurve(o.LiftMin, o.LiftMax);
+            velocity.z = new ParticleSystem.MinMaxCurve(-o.Lateral, o.Lateral);
+            velocity.radial = new ParticleSystem.MinMaxCurve(o.RadialMin, o.RadialMax);
 
             ParticleSystem.LimitVelocityOverLifetimeModule limitVelocity = ps.limitVelocityOverLifetime;
             limitVelocity.enabled = true;
             limitVelocity.space = ParticleSystemSimulationSpace.Local;
             limitVelocity.separateAxes = false;
-            float maxRadial = Mathf.Max(Mathf.Abs(radialMin), Mathf.Abs(radialMax));
-            float speedCap = Mathf.Max(0.20f, Mathf.Max(maxSpeed, maxRadial) * 1.16f);
+            float maxRadial = Mathf.Max(Mathf.Abs(o.RadialMin), Mathf.Abs(o.RadialMax));
+            float speedCap = Mathf.Max(0.20f, Mathf.Max(o.MaxSpeed, maxRadial) * 1.16f);
             limitVelocity.limit = new ParticleSystem.MinMaxCurve(speedCap);
             limitVelocity.dampen = 0.46f;
 
             ParticleSystem.ColorOverLifetimeModule colorOverLifetime = ps.colorOverLifetime;
             colorOverLifetime.enabled = true;
-            colorOverLifetime.color = gradient;
+            colorOverLifetime.color = o.Gradient;
 
             ParticleSystem.SizeOverLifetimeModule sizeOverLifetime = ps.sizeOverLifetime;
             sizeOverLifetime.enabled = true;
-            sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, sizeCurve);
+            sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, o.SizeCurve);
 
             ParticleSystem.NoiseModule noise = ps.noise;
             noise.enabled = true;
-            noise.strength = noiseStrength;
-            noise.frequency = noiseFrequency;
-            noise.scrollSpeed = noiseScroll;
+            noise.strength = o.NoiseStrength;
+            noise.frequency = o.NoiseFrequency;
+            noise.scrollSpeed = o.NoiseScroll;
             noise.damping = true;
 
             ParticleSystemRenderer renderer = ps.GetComponent<ParticleSystemRenderer>();
-            renderer.renderMode = renderMode;
-            renderer.sortingFudge = sortingFudge;
-            renderer.maxParticleSize = maxParticleSize;
-            if (material != null)
+            renderer.renderMode = o.RenderMode;
+            renderer.sortingFudge = o.SortingFudge;
+            renderer.maxParticleSize = o.MaxParticleSize;
+            if (o.Material != null)
             {
-                renderer.material = material;
+                renderer.sharedMaterial = o.Material;
             }
 
             return ps;
@@ -773,11 +785,11 @@ namespace KerbalFX.ImpactPuffs
             }
             up.Normalize();
 
-            Vector3 origin = vessel.CoM + up * 3.0f;
+            Vector3 origin = vessel.CoM + up * BurstRayOriginOffset;
             Vector3 direction = -up;
 
             RaycastHit hit;
-            if (!TryRayDown(origin, direction, 14f, out hit))
+            if (!TryRayDown(origin, direction, BurstRayMaxDistance, out hit))
             {
                 return false;
             }

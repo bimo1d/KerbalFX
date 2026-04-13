@@ -1,16 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using KSP.Localization;
 using UnityEngine;
 
-namespace RoverDustFX
+namespace KerbalFX.RoverDust
 {
     internal static class RoverDustLoc
     {
         public const string UiTitle = "#LOC_KerbalFX_RoverDust_UI_Title";
         public const string UiSection = "#LOC_KerbalFX_UI_Section";
+        public const string UiSectionMain = "#LOC_KerbalFX_UI_SectionMain";
 
         public const string UiEnableDust = "#LOC_KerbalFX_RoverDust_UI_EnableDust";
         public const string UiEnableDustTip = "#LOC_KerbalFX_RoverDust_UI_EnableDust_TT";
@@ -39,40 +39,6 @@ namespace RoverDustFX
         public const string LogConfig = "#LOC_KerbalFX_RoverDust_Log_Config";
         public const string LogHotReloadFailed = "#LOC_KerbalFX_RoverDust_Log_HotReloadFailed";
 
-        public static string Format(string key)
-        {
-            return Localizer.Format(key);
-        }
-
-        public static string Format(string key, object a)
-        {
-            return Localizer.Format(key, a);
-        }
-
-        public static string Format(string key, object a, object b)
-        {
-            return Localizer.Format(key, a, b);
-        }
-
-        public static string Format(string key, object a, object b, object c)
-        {
-            return Localizer.Format(key, a, b, c);
-        }
-
-        public static string Format(string key, object a, object b, object c, object d)
-        {
-            return Localizer.Format(key, a, b, c, d);
-        }
-
-        public static string Format(string key, object a, object b, object c, object d, object e)
-        {
-            return Localizer.Format(key, a, b, c, d, e);
-        }
-
-        public static string Format(string key, object a, object b, object c, object d, object e, object f)
-        {
-            return Localizer.Format(key, a, b, c, d, e, f);
-        }
     }
 
     public class RoverDustParameters : GameParameters.CustomParameterNode
@@ -99,35 +65,12 @@ namespace RoverDustFX
         [GameParameters.CustomParameterUI(RoverDustLoc.UiDebug, toolTip = RoverDustLoc.UiDebugTip)]
         public bool debugLogging;
 
-        public override string Title
-        {
-            get { return RoverDustLoc.Format(RoverDustLoc.UiTitle); }
-        }
-
-        public override GameParameters.GameMode GameMode
-        {
-            get { return GameParameters.GameMode.ANY; }
-        }
-
-        public override string Section
-        {
-            get { return "KerbalFX"; }
-        }
-
-        public override string DisplaySection
-        {
-            get { return RoverDustLoc.Format(RoverDustLoc.UiSection); }
-        }
-
-        public override int SectionOrder
-        {
-            get { return 4; }
-        }
-
-        public override bool HasPresets
-        {
-            get { return false; }
-        }
+        public override string Title { get { return Localizer.Format(RoverDustLoc.UiTitle); } }
+        public override GameParameters.GameMode GameMode { get { return GameParameters.GameMode.ANY; } }
+        public override string Section { get { return "KerbalFX_01_Main"; } }
+        public override string DisplaySection { get { return Localizer.Format(RoverDustLoc.UiSectionMain); } }
+        public override int SectionOrder { get { return 10; } }
+        public override bool HasPresets { get { return false; } }
     }
 
     internal static class RoverDustConfig
@@ -179,120 +122,93 @@ namespace RoverDustFX
             {
                 initialized = true;
                 Revision++;
-                RoverDustLog.Info(RoverDustLoc.Format(
+                RoverDustLog.Info(Localizer.Format(
                     RoverDustLoc.LogSettingsUpdated,
-                    EnableDust,
-                    QualityPercent,
-                    AdaptSurfaceColor,
-                    UseLightAware,
-                    DebugLogging
-                ));
+                    EnableDust, QualityPercent, AdaptSurfaceColor, UseLightAware, DebugLogging));
             }
         }
     }
 
-    internal static class KerbalFxRuntimeConfig
+    internal static class RoverDustRuntimeConfig
     {
-        public static bool Loaded;
         public static int Revision;
 
-        public static float EmissionMultiplier = 2.30f;
-        public static float MaxParticlesMultiplier = 1.45f;
-        public static float RadiusScaleMultiplier = 1.22f;
-        public static float WheelBoostPower = 1.65f;
-        public static float WheelBoostMax = 5.40f;
-        public static float LightRateExponent = 1.05f;
-        public static float LightAlphaExponent = 1.25f;
-        public static float MinCombinedLight = 0.040f;
-        public static float ShadowLightFactor = 0.20f;
-        public static float DaylightRateFloor = 0.42f;
-        public static float DaylightAlphaFloor = 0.40f;
+        public const float EmissionMultiplier = 2.55f;
+        public const float MaxParticlesMultiplier = 1.70f;
+        public const float RadiusScaleMultiplier = 1.38f;
+        public const float WheelBoostPower = 1.72f;
+        public const float WheelBoostMax = 6.20f;
+        public const float LightRateExponent = 1.05f;
+        public const float LightAlphaExponent = 1.25f;
+        public const float MinCombinedLight = 0.040f;
+        public const float ShadowLightFactor = 0.20f;
+        public const float DaylightRateFloor = 0.42f;
+        public const float DaylightAlphaFloor = 0.40f;
 
-        private static readonly Dictionary<string, float> BodyVisibilityMultipliers = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
-
-        private static DateTime lastCoreConfigWriteUtc = DateTime.MinValue;
-        private static DateTime lastRoverDustConfigWriteUtc = DateTime.MinValue;
+        private static readonly Dictionary<string, float> BodyVisibilityMultipliers =
+            new Dictionary<string, float>(16, StringComparer.OrdinalIgnoreCase);
+        private static DateTime lastConfigWriteUtc = DateTime.MinValue;
 
         public static void Refresh()
         {
-            ReloadFromGameDatabase();
-            PrimeConfigFileStamp(GetCoreConfigPath(), ref lastCoreConfigWriteUtc);
-            PrimeConfigFileStamp(GetRoverDustConfigPath(), ref lastRoverDustConfigWriteUtc);
+            SeedDefaultBodyVisibility();
+            if (GameDatabase.Instance != null)
+            {
+                ConfigNode[] nodes = GameDatabase.Instance.GetConfigNodes("KERBALFX_ROVER_DUST");
+                if (nodes != null)
+                    for (int i = 0; i < nodes.Length; i++)
+                        if (nodes[i] != null)
+                            KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.30f, 3.00f);
+            }
+            KerbalFxUtil.PrimeConfigFileStamp(GetConfigPath(), ref lastConfigWriteUtc);
+            Revision++;
+            RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogConfig, "GameDatabase",
+                "BodyVisibility=" + BodyVisibilityMultipliers.Count));
         }
 
         public static void TryHotReloadFromDisk()
         {
-            bool coreChanged = HasFileChanged(GetCoreConfigPath(), ref lastCoreConfigWriteUtc);
-            bool roverChanged = HasFileChanged(GetRoverDustConfigPath(), ref lastRoverDustConfigWriteUtc);
-            if (!coreChanged && !roverChanged)
-            {
+            if (!KerbalFxUtil.HasConfigFileChanged(GetConfigPath(), ref lastConfigWriteUtc))
                 return;
+            SeedDefaultBodyVisibility();
+            try
+            {
+                string path = GetConfigPath();
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                {
+                    ConfigNode root = ConfigNode.Load(path);
+                    if (root != null)
+                    {
+                        ConfigNode[] nodes = root.GetNodes("KERBALFX_ROVER_DUST");
+                        if (nodes != null)
+                            for (int i = 0; i < nodes.Length; i++)
+                                if (nodes[i] != null)
+                                    KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.30f, 3.00f);
+                    }
+                }
             }
-
-            ReloadFromDiskFiles();
+            catch (Exception ex)
+            {
+                RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogHotReloadFailed, GetConfigPath(), ex.Message));
+            }
+            Revision++;
+            RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogConfig, "HotReload",
+                "BodyVisibility=" + BodyVisibilityMultipliers.Count));
         }
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
             if (string.IsNullOrEmpty(bodyName))
-            {
                 return 1f;
-            }
-
-            float multiplier;
-            if (BodyVisibilityMultipliers.TryGetValue(bodyName.Trim(), out multiplier))
-            {
-                return Mathf.Clamp(multiplier, 0.30f, 3.00f);
-            }
-
+            float m;
+            if (BodyVisibilityMultipliers.TryGetValue(bodyName.Trim(), out m))
+                return Mathf.Clamp(m, 0.30f, 3.00f);
             return 1f;
         }
 
-        private static void ReloadFromGameDatabase()
-        {
-            SeedDefaultValues();
-
-            ApplyFromNodes("KERBALFX_CORE");
-            ApplyFromNodes("KERBALFX_ROVER_DUST");
-
-            Loaded = true;
-            Revision++;
-            LogCurrentConfig("GameDatabase");
-        }
-
-        private static void ReloadFromDiskFiles()
-        {
-            SeedDefaultValues();
-
-            ApplyFromDiskConfigNode(GetCoreConfigPath(), "KERBALFX_CORE");
-            ApplyFromDiskConfigNode(GetRoverDustConfigPath(), "KERBALFX_ROVER_DUST");
-
-            Loaded = true;
-            Revision++;
-            LogCurrentConfig("HotReload");
-        }
-
-        private static void SeedDefaultValues()
-        {
-            EmissionMultiplier = 2.30f;
-            MaxParticlesMultiplier = 1.45f;
-            RadiusScaleMultiplier = 1.22f;
-            WheelBoostPower = 1.65f;
-            WheelBoostMax = 5.40f;
-            LightRateExponent = 1.05f;
-            LightAlphaExponent = 1.25f;
-            MinCombinedLight = 0.040f;
-            ShadowLightFactor = 0.20f;
-            DaylightRateFloor = 0.42f;
-            DaylightAlphaFloor = 0.40f;
-
-            SeedDefaultBodyVisibilityMultipliers();
-        }
-
-        private static void SeedDefaultBodyVisibilityMultipliers()
+        private static void SeedDefaultBodyVisibility()
         {
             BodyVisibilityMultipliers.Clear();
-
             BodyVisibilityMultipliers["Mun"] = 1.65f;
             BodyVisibilityMultipliers["Minmus"] = 1.55f;
             BodyVisibilityMultipliers["Duna"] = 1.00f;
@@ -307,228 +223,25 @@ namespace RoverDustFX
             BodyVisibilityMultipliers["Tylo"] = 0.92f;
         }
 
-        private static void LogCurrentConfig(string sourceTag)
-        {
-            string details =
-                "EmissionMultiplier=" + EmissionMultiplier.ToString("F2", CultureInfo.InvariantCulture)
-                + " MaxParticlesMultiplier=" + MaxParticlesMultiplier.ToString("F2", CultureInfo.InvariantCulture)
-                + " RadiusScaleMultiplier=" + RadiusScaleMultiplier.ToString("F2", CultureInfo.InvariantCulture)
-                + " WheelBoostPower=" + WheelBoostPower.ToString("F2", CultureInfo.InvariantCulture)
-                + " WheelBoostMax=" + WheelBoostMax.ToString("F2", CultureInfo.InvariantCulture)
-                + " DaylightRateFloor=" + DaylightRateFloor.ToString("F2", CultureInfo.InvariantCulture)
-                + " DaylightAlphaFloor=" + DaylightAlphaFloor.ToString("F2", CultureInfo.InvariantCulture)
-                + " BodyVisibilityEntries=" + BodyVisibilityMultipliers.Count.ToString(CultureInfo.InvariantCulture);
-
-            RoverDustLog.Info(
-                RoverDustLoc.Format(RoverDustLoc.LogConfig, sourceTag, details));
-        }
-
-        private static string GetCoreConfigPath()
-        {
-            return Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KerbalFX", "Core", "KerbalFX_Core.cfg");
-        }
-
-        private static string GetRoverDustConfigPath()
+        private static string GetConfigPath()
         {
             return Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KerbalFX", "RoverDust", "KerbalFX_RoverDust.cfg");
-        }
-
-        private static void PrimeConfigFileStamp(string path, ref DateTime stamp)
-        {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            {
-                return;
-            }
-
-            stamp = File.GetLastWriteTimeUtc(path);
-        }
-
-        private static bool HasFileChanged(string path, ref DateTime stamp)
-        {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            {
-                return false;
-            }
-
-            DateTime writeUtc = File.GetLastWriteTimeUtc(path);
-            if (writeUtc <= DateTime.MinValue)
-            {
-                return false;
-            }
-
-            if (writeUtc <= stamp)
-            {
-                return false;
-            }
-
-            stamp = writeUtc;
-            return true;
-        }
-
-        private static void ApplyFromNodes(string nodeName)
-        {
-            if (GameDatabase.Instance == null)
-            {
-                return;
-            }
-
-            ConfigNode[] nodes = GameDatabase.Instance.GetConfigNodes(nodeName);
-            if (nodes == null || nodes.Length == 0)
-            {
-                return;
-            }
-
-            for (int i = 0; i < nodes.Length; i++)
-            {
-                ConfigNode node = nodes[i];
-                if (node == null)
-                {
-                    continue;
-                }
-
-                ApplyFromNode(node);
-            }
-        }
-
-        private static void ApplyFromDiskConfigNode(string configPath, string nodeName)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(configPath) || !File.Exists(configPath))
-                {
-                    return;
-                }
-
-                ConfigNode root = ConfigNode.Load(configPath);
-                if (root == null)
-                {
-                    return;
-                }
-
-                ConfigNode[] nodes = root.GetNodes(nodeName);
-                if (nodes == null || nodes.Length == 0)
-                {
-                    return;
-                }
-
-                for (int i = 0; i < nodes.Length; i++)
-                {
-                    ConfigNode node = nodes[i];
-                    if (node != null)
-                    {
-                        ApplyFromNode(node);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                RoverDustLog.Info(RoverDustLoc.Format(RoverDustLoc.LogHotReloadFailed, configPath, ex.Message));
-            }
-        }
-
-        private static void ApplyFromNode(ConfigNode node)
-        {
-            EmissionMultiplier = ReadFloat(node, "EmissionMultiplier", EmissionMultiplier, 0.10f, 12f);
-            MaxParticlesMultiplier = ReadFloat(node, "MaxParticlesMultiplier", MaxParticlesMultiplier, 0.30f, 6f);
-            RadiusScaleMultiplier = ReadFloat(node, "RadiusScaleMultiplier", RadiusScaleMultiplier, 0.50f, 3f);
-            WheelBoostPower = ReadFloat(node, "WheelBoostPower", WheelBoostPower, 0.60f, 3f);
-            WheelBoostMax = ReadFloat(node, "WheelBoostMax", WheelBoostMax, 1f, 12f);
-            LightRateExponent = ReadFloat(node, "LightRateExponent", LightRateExponent, 0.50f, 3f);
-            LightAlphaExponent = ReadFloat(node, "LightAlphaExponent", LightAlphaExponent, 0.60f, 3f);
-            MinCombinedLight = ReadFloat(node, "MinCombinedLight", MinCombinedLight, 0f, 0.3f);
-            ShadowLightFactor = ReadFloat(node, "ShadowLightFactor", ShadowLightFactor, 0f, 1f);
-            DaylightRateFloor = ReadFloat(node, "DaylightRateFloor", DaylightRateFloor, 0f, 1f);
-            DaylightAlphaFloor = ReadFloat(node, "DaylightAlphaFloor", DaylightAlphaFloor, 0f, 1f);
-
-            ApplyBodyVisibilityFromNode(node);
-        }
-
-        private static void ApplyBodyVisibilityFromNode(ConfigNode node)
-        {
-            if (node == null)
-            {
-                return;
-            }
-
-            ConfigNode[] bodyNodes = node.GetNodes("BODY_VISIBILITY");
-            if (bodyNodes == null || bodyNodes.Length == 0)
-            {
-                return;
-            }
-
-            for (int i = 0; i < bodyNodes.Length; i++)
-            {
-                ConfigNode bodyNode = bodyNodes[i];
-                if (bodyNode == null)
-                {
-                    continue;
-                }
-
-                string name = bodyNode.GetValue("name");
-                if (string.IsNullOrEmpty(name))
-                {
-                    continue;
-                }
-
-                float multiplier = ReadFloat(bodyNode, "multiplier", 1f, 0.30f, 3.00f);
-                BodyVisibilityMultipliers[name.Trim()] = multiplier;
-            }
-        }
-
-        private static float ReadFloat(ConfigNode node, string key, float fallback, float minValue, float maxValue)
-        {
-            if (node == null || string.IsNullOrEmpty(key))
-            {
-                return fallback;
-            }
-
-            if (!node.HasValue(key))
-            {
-                return fallback;
-            }
-
-            string raw = node.GetValue(key);
-            if (string.IsNullOrEmpty(raw))
-            {
-                return fallback;
-            }
-
-            float value;
-            if (float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-            {
-                return Mathf.Clamp(value, minValue, maxValue);
-            }
-
-            if (float.TryParse(raw, NumberStyles.Float, CultureInfo.CurrentCulture, out value))
-            {
-                return Mathf.Clamp(value, minValue, maxValue);
-            }
-
-            return fallback;
         }
     }
 
     internal static class RoverDustLog
     {
-        public static void Info(string message)
-        {
-            Debug.Log("[KerbalFX] " + message);
-        }
-
-        public static void DebugLog(string message)
-        {
-            if (RoverDustConfig.DebugLogging)
-            {
-                Debug.Log("[KerbalFX] " + message);
-            }
-        }
+        public static void Info(string message) { Debug.Log("[KerbalFX] " + message); }
+        public static void DebugLog(string message) { if (RoverDustConfig.DebugLogging) Debug.Log("[KerbalFX] " + message); }
     }
 
     [KSPAddon(KSPAddon.Startup.Flight, false)]
     public class RoverDustBootstrap : MonoBehaviour
     {
         private readonly Dictionary<Guid, VesselDustController> controllers = new Dictionary<Guid, VesselDustController>();
+        private readonly List<VesselDustController> controllerList = new List<VesselDustController>();
         private readonly List<Guid> removeControllerIds = new List<Guid>(32);
+        private bool controllerListDirty = true;
 
         private float controllerRefreshTimer;
         private float settingsRefreshTimer;
@@ -537,20 +250,19 @@ namespace RoverDustFX
 
         private const float ControllerRefreshInterval = 1.0f;
         private const float SettingsRefreshInterval = 0.5f;
+        private const float HeartbeatInterval = 2.5f;
 
         private void Start()
         {
             RoverDustConfig.Refresh();
-            KerbalFxRuntimeConfig.Refresh();
-            RoverDustLog.Info(RoverDustLoc.Format(RoverDustLoc.LogBootstrapStart));
+            RoverDustRuntimeConfig.Refresh();
+            RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogBootstrapStart));
         }
 
         private void Update()
         {
             if (!HighLogic.LoadedSceneIsFlight)
-            {
                 return;
-            }
 
             float dt = Time.deltaTime;
             RefreshSettingsIfNeeded(dt);
@@ -575,50 +287,45 @@ namespace RoverDustFX
         {
             settingsRefreshTimer -= dt;
             if (settingsRefreshTimer > 0f)
-            {
                 return;
-            }
-
             settingsRefreshTimer = SettingsRefreshInterval;
             RoverDustConfig.Refresh();
-            KerbalFxRuntimeConfig.TryHotReloadFromDisk();
+            RoverDustRuntimeConfig.TryHotReloadFromDisk();
         }
 
         private void RefreshControllersIfNeeded(float dt)
         {
             controllerRefreshTimer -= dt;
             if (controllerRefreshTimer > 0f)
-            {
                 return;
-            }
-
             controllerRefreshTimer = ControllerRefreshInterval;
             RefreshControllers();
         }
 
         private void TickControllers(float dt)
         {
-            foreach (KeyValuePair<Guid, VesselDustController> pair in controllers)
+            if (controllerListDirty)
             {
-                pair.Value.Tick(dt);
+                controllerListDirty = false;
+                controllerList.Clear();
+                var e = controllers.GetEnumerator();
+                while (e.MoveNext())
+                    controllerList.Add(e.Current.Value);
+                e.Dispose();
             }
+            for (int i = 0; i < controllerList.Count; i++)
+                controllerList[i].Tick(dt);
         }
 
         private void LogHeartbeatIfNeeded(float dt)
         {
             if (!RoverDustConfig.DebugLogging)
-            {
                 return;
-            }
-
             debugHeartbeatTimer -= dt;
             if (debugHeartbeatTimer > 0f)
-            {
                 return;
-            }
-
-            debugHeartbeatTimer = 2.5f;
-            RoverDustLog.DebugLog(RoverDustLoc.Format(RoverDustLoc.LogHeartbeat, controllers.Count));
+            debugHeartbeatTimer = HeartbeatInterval;
+            RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogHeartbeat, controllers.Count));
         }
 
         private void RefreshControllers()
@@ -630,46 +337,38 @@ namespace RoverDustFX
         private void RemoveInvalidControllers()
         {
             removeControllerIds.Clear();
-            foreach (KeyValuePair<Guid, VesselDustController> pair in controllers)
+            var e = controllers.GetEnumerator();
+            while (e.MoveNext())
             {
-                if (!pair.Value.IsStillValid())
+                if (!e.Current.Value.IsStillValid())
                 {
-                    pair.Value.Dispose();
-                    removeControllerIds.Add(pair.Key);
+                    e.Current.Value.Dispose();
+                    removeControllerIds.Add(e.Current.Key);
                 }
             }
-
+            e.Dispose();
             for (int i = 0; i < removeControllerIds.Count; i++)
-            {
                 controllers.Remove(removeControllerIds[i]);
-            }
+            if (removeControllerIds.Count > 0)
+                controllerListDirty = true;
         }
 
         private void AttachOrRefreshLoadedVessels()
         {
             List<Vessel> loaded = FlightGlobals.VesselsLoaded;
             if (loaded == null)
-            {
                 return;
-            }
-
             for (int i = 0; i < loaded.Count; i++)
             {
                 Vessel vessel = loaded[i];
                 if (!IsSupportedVessel(vessel))
-                {
                     continue;
-                }
 
                 VesselDustController controller;
                 if (controllers.TryGetValue(vessel.id, out controller))
-                {
                     controller.TryRebuild();
-                }
                 else
-                {
                     TryAttachController(vessel);
-                }
             }
         }
 
@@ -681,38 +380,36 @@ namespace RoverDustFX
                 controller.Dispose();
                 return;
             }
-
             controllers.Add(vessel.id, controller);
-            RoverDustLog.DebugLog(RoverDustLoc.Format(RoverDustLoc.LogAttached, controller.EmitterCount, vessel.vesselName));
+            controllerListDirty = true;
+            RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogAttached, controller.EmitterCount, vessel.vesselName));
         }
 
         private static bool IsSupportedVessel(Vessel vessel)
         {
             if (vessel == null || !vessel.loaded || vessel.packed || vessel.isEVA)
-            {
                 return false;
-            }
-
             return vessel.vesselType != VesselType.Flag && vessel.vesselType != VesselType.Debris;
         }
 
         private void StopAllEmitters()
         {
-            foreach (KeyValuePair<Guid, VesselDustController> pair in controllers)
-            {
-                pair.Value.StopAll();
-            }
+            var e = controllers.GetEnumerator();
+            while (e.MoveNext())
+                e.Current.Value.StopAll();
+            e.Dispose();
         }
 
         private void OnDestroy()
         {
-            foreach (KeyValuePair<Guid, VesselDustController> pair in controllers)
-            {
-                pair.Value.Dispose();
-            }
-
+            var e = controllers.GetEnumerator();
+            while (e.MoveNext())
+                e.Current.Value.Dispose();
+            e.Dispose();
             controllers.Clear();
-            RoverDustLog.Info(RoverDustLoc.Format(RoverDustLoc.LogBootstrapStop));
+            controllerList.Clear();
+            controllerListDirty = true;
+            RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogBootstrapStop));
         }
     }
 
@@ -721,16 +418,10 @@ namespace RoverDustFX
         private readonly Vessel vessel;
         private readonly List<WheelDustEmitter> emitters = new List<WheelDustEmitter>();
         private int cachedPartCount = -1;
+        private uint cachedPartSignature;
 
-        public int EmitterCount
-        {
-            get { return emitters.Count; }
-        }
-
-        public bool HasEmitters
-        {
-            get { return emitters.Count > 0; }
-        }
+        public int EmitterCount { get { return emitters.Count; } }
+        public bool HasEmitters { get { return emitters.Count > 0; } }
 
         public VesselDustController(Vessel vessel)
         {
@@ -746,23 +437,34 @@ namespace RoverDustFX
         public void TryRebuild()
         {
             if (vessel == null || vessel.parts == null)
-            {
                 return;
-            }
-
-            if (vessel.parts.Count != cachedPartCount)
+            int count = vessel.parts.Count;
+            if (count != cachedPartCount)
             {
                 RebuildEmitters();
+                return;
             }
+            uint sig = ComputePartSignature(vessel);
+            if (sig != cachedPartSignature)
+                RebuildEmitters();
+        }
+
+        private static uint ComputePartSignature(Vessel v)
+        {
+            uint hash = 17;
+            for (int i = 0; i < v.parts.Count; i++)
+            {
+                Part p = v.parts[i];
+                if (p != null)
+                    hash = hash * 31 + p.flightID;
+            }
+            return hash;
         }
 
         public void Tick(float dt)
         {
             if (emitters.Count == 0)
-            {
                 return;
-            }
-
             if (vessel == null || !vessel.loaded || vessel.packed || vessel.Splashed)
             {
                 StopAll();
@@ -778,17 +480,13 @@ namespace RoverDustFX
             }
 
             for (int i = 0; i < emitters.Count; i++)
-            {
                 emitters[i].Tick(vessel, dt);
-            }
         }
 
         public void StopAll()
         {
             for (int i = 0; i < emitters.Count; i++)
-            {
                 emitters[i].StopEmission();
-            }
         }
 
         public void Dispose()
@@ -800,94 +498,55 @@ namespace RoverDustFX
         {
             DisposeEmitters();
             cachedPartCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
-
+            cachedPartSignature = vessel != null ? ComputePartSignature(vessel) : 0u;
             if (vessel == null || vessel.parts == null)
-            {
                 return;
-            }
 
             int wheelPartCount = 0;
             for (int i = 0; i < vessel.parts.Count; i++)
             {
                 Part part = vessel.parts[i];
-                if (!PartLooksLikeWheel(part))
-                {
+                WheelCollider[] colliders;
+                if (!PartLooksLikeWheel(part, out colliders))
                     continue;
-                }
 
                 wheelPartCount++;
-                AddPartEmitters(part);
+                AddPartEmitters(part, colliders);
             }
 
             LogVesselScan(wheelPartCount);
         }
 
-        private void AddPartEmitters(Part part)
+        private void AddPartEmitters(Part part, WheelCollider[] colliders)
         {
-            WheelCollider[] colliders = part.GetComponentsInChildren<WheelCollider>(true);
-            if (colliders == null || colliders.Length == 0)
-            {
-                RoverDustLog.DebugLog(RoverDustLoc.Format(RoverDustLoc.LogNoCollider, part.partInfo.title));
-                return;
-            }
-
             for (int i = 0; i < colliders.Length; i++)
             {
                 if (colliders[i] != null)
-                {
                     emitters.Add(new WheelDustEmitter(part, colliders[i]));
-                }
             }
         }
 
         private void LogVesselScan(int wheelPartCount)
         {
             if (!RoverDustConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel)
-            {
                 return;
-            }
-
-            RoverDustLog.DebugLog(RoverDustLoc.Format(RoverDustLoc.LogVesselScan, vessel.vesselName, wheelPartCount, emitters.Count));
+            RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogVesselScan, vessel.vesselName, wheelPartCount, emitters.Count));
         }
 
         private void DisposeEmitters()
         {
             for (int i = 0; i < emitters.Count; i++)
-            {
                 emitters[i].Dispose();
-            }
-
             emitters.Clear();
         }
 
-        private static bool PartLooksLikeWheel(Part part)
+        private static bool PartLooksLikeWheel(Part part, out WheelCollider[] colliders)
         {
+            colliders = null;
             if (part == null)
-            {
                 return false;
-            }
-
-            if (part.Modules != null)
-            {
-                for (int i = 0; i < part.Modules.Count; i++)
-                {
-                    PartModule module = part.Modules[i];
-                    if (module == null || string.IsNullOrEmpty(module.moduleName))
-                    {
-                        continue;
-                    }
-
-                    if (module.moduleName.IndexOf("wheel", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            WheelCollider[] colliders = part.GetComponentsInChildren<WheelCollider>(true);
+            colliders = part.GetComponentsInChildren<WheelCollider>(true);
             return colliders != null && colliders.Length > 0;
         }
     }
-
 }
-

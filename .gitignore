@@ -2,6 +2,19 @@
 **/CSC*.TMP
 **/build_*.rsp
 **/build_*.txt
+*.build.tmp.dll
+
+# IDE / project files
+.vs/
+.idea/
+*.user
+*.suo
+*.cache
+*.DotSettings.user
+bin/
+obj/
+packages/
+TestResults/
 
 # OS/editor noise
 .DS_Store

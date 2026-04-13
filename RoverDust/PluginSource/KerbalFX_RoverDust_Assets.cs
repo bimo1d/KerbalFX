@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace RoverDustFX
+namespace KerbalFX.RoverDust
 {
     internal static class RoverDustAssets
     {
@@ -14,15 +14,7 @@ namespace RoverDustFX
                 return sharedMaterial;
             }
 
-            Shader shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended");
-            if (shader == null)
-            {
-                shader = Shader.Find("Particles/Standard Unlit");
-            }
-            if (shader == null)
-            {
-                shader = Shader.Find("Sprites/Default");
-            }
+            Shader shader = KerbalFxUtil.FindParticleShader();
             if (shader == null)
             {
                 return null;

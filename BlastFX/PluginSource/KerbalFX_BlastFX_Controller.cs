@@ -10,6 +10,13 @@ namespace KerbalFX.BlastFX
     [KSPAddon(KSPAddon.Startup.Flight, false)]
     internal class BlastFxController : MonoBehaviour
     {
+        private enum FxKind
+        {
+            None = 0,
+            PyroRing,
+            SoftPuff
+        }
+
         private sealed class State
         {
             public bool Init;
@@ -56,7 +63,7 @@ namespace KerbalFX.BlastFX
         private void Start()
         {
             BlastFxConfig.Refresh();
-            BlastFxRuntime.Refresh();
+            BlastFxRuntimeConfig.Refresh();
             SubscribeEvents();
             RequestBoostedScan(4.0f);
         }
@@ -64,6 +71,8 @@ namespace KerbalFX.BlastFX
         private void OnDestroy()
         {
             UnsubscribeEvents();
+            byPart.Clear();
+            suppressedFxUntilByPart.Clear();
             trackedTargets.Clear();
             hiddenRings.Clear();
         }
@@ -106,8 +115,8 @@ namespace KerbalFX.BlastFX
         {
             RequestBoostedScan(3.0f);
             if (!BlastFxConfig.Enabled) return;
-            if (!BlastFxRuntime.EnableModule) return;
-            if (!BlastFxRuntime.DespawnDetachedRingVessel) return;
+            if (!BlastFxRuntimeConfig.EnableModule) return;
+            if (!BlastFxRuntimeConfig.DespawnDetachedRingVessel) return;
             TryDespawnSeparatedRingVessel(fromVessel);
             TryDespawnSeparatedRingVessel(toVessel);
         }
@@ -124,10 +133,10 @@ namespace KerbalFX.BlastFX
         {
             Part ringPart = TryGetSinglePart(vessel);
             if (ringPart == null) return;
-            if (!IsTarget(ringPart)) return;
+            if (!IsPyroTarget(ringPart)) return;
 
-            SuppressFx(ringPart, BlastFxRuntime.DespawnDelay + 2.0f);
-            if (BlastFxRuntime.HideDetachedRingVisualImmediately)
+            SuppressFx(ringPart, BlastFxRuntimeConfig.DespawnDelay + 2.0f);
+            if (BlastFxRuntimeConfig.HideDetachedRingVisualImmediately)
             {
                 HidePartVisuals(ringPart);
             }
@@ -135,13 +144,13 @@ namespace KerbalFX.BlastFX
             if (ShouldSkipDespawnToPreserveShroud(ringPart))
             {
                 TrackHiddenRing(ringPart);
-                Log.Info(Localizer.Format(
+                BlastFxLog.DebugLog(Localizer.Format(
                     BlastFxLoc.LogSkipDespawnPreserveShroud,
                     ringPart.partInfo != null ? ringPart.partInfo.name : "unknown"));
                 return;
             }
 
-            float despawnDelay = Mathf.Max(0f, BlastFxRuntime.DespawnDelay);
+            float despawnDelay = Mathf.Max(0f, BlastFxRuntimeConfig.DespawnDelay);
             if (despawnDelay <= 0.0001f)
             {
                 if (ringPart != null && ringPart.vessel != null && ringPart.vessel.parts != null && ringPart.vessel.parts.Count == 1)
@@ -159,6 +168,11 @@ namespace KerbalFX.BlastFX
             yield return new WaitForSeconds(delay);
             if (!IsSinglePartVessel(ringPart != null ? ringPart.vessel : null)) yield break;
             ringPart.Die();
+        }
+
+        private static bool IsSinglePartTrackedVessel(Vessel vessel)
+        {
+            return vessel != null && vessel.parts != null && vessel.parts.Count == 1;
         }
 
         private static bool IsSinglePartVessel(Vessel vessel)
@@ -181,7 +195,6 @@ namespace KerbalFX.BlastFX
             DisableRenderers(part.FindModelComponents<Renderer>());
             StopParticles(part.FindModelComponents<ParticleSystem>());
             DisableLights(part.FindModelComponents<Light>());
-            DisableColliders(part.FindModelComponents<Collider>());
         }
 
         private static void DisableRenderers(List<Renderer> renderers)
@@ -223,22 +236,10 @@ namespace KerbalFX.BlastFX
             }
         }
 
-        private static void DisableColliders(List<Collider> colliders)
-        {
-            if (colliders == null) return;
-            for (int i = 0; i < colliders.Count; i++)
-            {
-                Collider col = colliders[i];
-                if (col != null)
-                {
-                    col.enabled = false;
-                }
-            }
-        }
-
         private void TryTriggerFromEvent(Part part, string source)
         {
-            if (!BlastFxConfig.Enabled || !BlastFxRuntime.EnableModule || part == null || !IsTarget(part))
+            FxKind fxKind = GetEventFxKind(part, source);
+            if (!BlastFxConfig.Enabled || !BlastFxRuntimeConfig.EnableModule || part == null || fxKind == FxKind.None)
             {
                 return;
             }
@@ -249,19 +250,19 @@ namespace KerbalFX.BlastFX
 
             State state = GetOrCreateState(part.flightID);
             double ut = Planetarium.GetUniversalTime();
-            if (ut - state.LastFxUt < BlastFxRuntime.TriggerCooldown)
+            if (ut - state.LastFxUt < BlastFxRuntimeConfig.TriggerCooldown)
             {
                 return;
             }
 
             state.LastFxUt = ut;
             Vector3 axis = GetAxis(part, state.Axis);
-            if (TrySpawnFromLivePart(part, state, axis, source))
+            if (TrySpawnFromLivePart(part, state, axis, source, fxKind))
             {
                 return;
             }
 
-            TrySpawnFromSnapshot(part, state, axis, source);
+            TrySpawnFromSnapshot(part, state, axis, source, fxKind);
         }
 
         private State GetOrCreateState(uint flightId)
@@ -275,7 +276,7 @@ namespace KerbalFX.BlastFX
             return state;
         }
 
-        private static bool TrySpawnFromLivePart(Part part, State state, Vector3 axis, string source)
+        private static bool TrySpawnFromLivePart(Part part, State state, Vector3 axis, string source, FxKind fxKind)
         {
             if (part == null || state == null || part.transform == null)
             {
@@ -285,13 +286,13 @@ namespace KerbalFX.BlastFX
             state.HasSnapshot = true;
             state.SnapshotPosition = part.transform.position;
             state.SnapshotLayer = part.gameObject != null ? part.gameObject.layer : 0;
-            SpawnBurst(part, axis);
+            SpawnFx(fxKind, part, axis);
             string partName = part.partInfo != null ? part.partInfo.name : "unknown";
-            Log.Info(Localizer.Format(BlastFxLoc.LogTriggerVia, source, partName));
+            BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerVia, source, partName));
             return true;
         }
 
-        private static void TrySpawnFromSnapshot(Part part, State state, Vector3 axis, string source)
+        private static void TrySpawnFromSnapshot(Part part, State state, Vector3 axis, string source, FxKind fxKind)
         {
             if (part == null || state == null || !state.HasSnapshot)
             {
@@ -300,8 +301,8 @@ namespace KerbalFX.BlastFX
 
             float partRadius = EstimatePartRadius(part);
             string partName = part.partInfo != null ? part.partInfo.name : "unknown";
-            SpawnBurst(state.SnapshotPosition, axis, state.SnapshotLayer, partRadius, partName);
-            Log.Info(Localizer.Format(BlastFxLoc.LogTriggerViaSnapshot, source, partName));
+            SpawnFx(fxKind, state.SnapshotPosition, axis, state.SnapshotLayer, partRadius, partName);
+            BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerViaSnapshot, source, partName));
         }
 
         private void Update()
@@ -311,17 +312,17 @@ namespace KerbalFX.BlastFX
             {
                 cfgTimer = CfgDt;
                 BlastFxConfig.Refresh();
-                BlastFxRuntime.TryHotReload();
+                BlastFxRuntimeConfig.TryHotReload();
             }
 
             hiddenRingCleanupTimer -= Time.deltaTime;
             if (hiddenRingCleanupTimer <= 0f)
             {
-                hiddenRingCleanupTimer = BlastFxRuntime.HiddenRingCleanupInterval;
+                hiddenRingCleanupTimer = BlastFxRuntimeConfig.HiddenRingCleanupInterval;
                 CleanupHiddenRings();
             }
 
-            if (!BlastFxConfig.Enabled || !BlastFxRuntime.EnableModule) return;
+            if (!BlastFxConfig.Enabled || !BlastFxRuntimeConfig.EnableModule) return;
 
             RefreshTrackedTargetsIfNeeded(Time.deltaTime);
 
@@ -380,7 +381,7 @@ namespace KerbalFX.BlastFX
                 for (int i = 0; i < vessel.parts.Count; i++)
                 {
                     Part part = vessel.parts[i];
-                    if (IsTarget(part))
+                    if (IsPyroTarget(part))
                     {
                         trackedTargets.Add(part);
                     }
@@ -390,7 +391,7 @@ namespace KerbalFX.BlastFX
 
         private void ProcessTargetPartFromScan(Part part, double scanUt)
         {
-            if (!IsTarget(part))
+            if (!IsPyroTarget(part))
             {
                 return;
             }
@@ -449,39 +450,67 @@ namespace KerbalFX.BlastFX
                 return;
             }
 
-            if (scanUt - state.LastFxUt < BlastFxRuntime.TriggerCooldown)
+            if (scanUt - state.LastFxUt < BlastFxRuntimeConfig.TriggerCooldown)
             {
                 return;
             }
 
             state.LastFxUt = scanUt;
-            SpawnBurst(part, axis);
+            SpawnFx(FxKind.PyroRing, part, axis);
             string partName = part.partInfo != null ? part.partInfo.name : "unknown";
-            Log.Info(Localizer.Format(BlastFxLoc.LogTriggerViaScan, partName));
+            BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerViaScan, partName));
         }
 
         private void PruneMissingPartStates()
         {
             staleIds.Clear();
-            foreach (KeyValuePair<uint, State> kv in byPart)
+            var e = byPart.GetEnumerator();
+            while (e.MoveNext())
             {
-                if (!seenIds.Contains(kv.Key))
-                {
-                    staleIds.Add(kv.Key);
-                }
+                if (!seenIds.Contains(e.Current.Key))
+                    staleIds.Add(e.Current.Key);
             }
+            e.Dispose();
             for (int i = 0; i < staleIds.Count; i++)
-            {
                 byPart.Remove(staleIds[i]);
-            }
         }
 
-        private static bool IsTarget(Part p)
+        private static FxKind GetEventFxKind(Part part, string source)
+        {
+            if (part == null || part.partInfo == null || part.Modules == null)
+            {
+                return FxKind.None;
+            }
+
+            if (!HasDecouplerModule(part))
+            {
+                return FxKind.None;
+            }
+
+            if (IsPyroTarget(part))
+            {
+                return FxKind.PyroRing;
+            }
+
+            if (string.Equals(source, "onPartDeCouple", StringComparison.Ordinal) && IsSoftDecouplerTarget(part))
+            {
+                return FxKind.SoftPuff;
+            }
+
+            return FxKind.None;
+        }
+
+        private static bool IsPyroTarget(Part p)
         {
             if (p == null || p.partInfo == null || p.Modules == null) return false;
             if (!HasDecouplerModule(p)) return false;
             if (MatchesTargetToken(p)) return true;
             return IsLikelyStockTsSeparator(p);
+        }
+
+        private static bool IsSoftDecouplerTarget(Part p)
+        {
+            return p != null && HasDecouplerModule(p) && !IsPyroTarget(p);
         }
 
         private static bool HasDecouplerModule(Part p)
@@ -501,10 +530,10 @@ namespace KerbalFX.BlastFX
 
         private static bool MatchesTargetToken(Part p)
         {
-            string target = BlastFxRuntime.TargetPrefix;
-            if (string.IsNullOrWhiteSpace(target))
+            string target = BlastFxRuntimeConfig.TargetPrefix;
+            if (string.IsNullOrEmpty(target) || target.Trim().Length == 0)
             {
-                return true;
+                return false;
             }
 
             string name = p.partInfo != null ? p.partInfo.name : string.Empty;
@@ -512,7 +541,7 @@ namespace KerbalFX.BlastFX
             string localizedTitle = null;
             bool hasLocalizedKey = !string.IsNullOrEmpty(rawTitle) && rawTitle.StartsWith("#", StringComparison.Ordinal);
 
-            string[] tokens = BlastFxRuntime.TargetTokens;
+            string[] tokens = BlastFxRuntimeConfig.TargetTokens;
             for (int i = 0; i < tokens.Length; i++)
             {
                 string token = tokens[i];
@@ -543,7 +572,7 @@ namespace KerbalFX.BlastFX
 
         private static bool IsLikelyStockTsSeparator(Part p)
         {
-            string cfgToken = BlastFxRuntime.TargetPrefix;
+            string cfgToken = BlastFxRuntimeConfig.TargetPrefix;
             if (string.IsNullOrWhiteSpace(cfgToken) || cfgToken.IndexOf("TS", StringComparison.OrdinalIgnoreCase) < 0)
             {
                 return false;
@@ -664,7 +693,7 @@ namespace KerbalFX.BlastFX
             }
 
             double now = Planetarium.GetUniversalTime();
-            double keepSeconds = Math.Max(HiddenRingMinKeepSeconds, BlastFxRuntime.DespawnDelay + 3.0f);
+            double keepSeconds = Math.Max(HiddenRingMinKeepSeconds, BlastFxRuntimeConfig.DespawnDelay + 3.0f);
             hiddenRings[ringPart.flightID] = new HiddenRingState
             {
                 Part = ringPart,
@@ -680,7 +709,7 @@ namespace KerbalFX.BlastFX
                 return;
             }
 
-            if (!BlastFxRuntime.SmartHiddenRingCleanup)
+            if (!BlastFxRuntimeConfig.SmartHiddenRingCleanup)
             {
                 hiddenRings.Clear();
                 return;
@@ -690,44 +719,39 @@ namespace KerbalFX.BlastFX
             Vessel activeVessel = FlightGlobals.ActiveVessel;
             bool hasActivePosition = activeVessel != null && activeVessel.transform != null;
             Vector3 activePosition = hasActivePosition ? activeVessel.transform.position : Vector3.zero;
-            float cleanupDistanceSqr = BlastFxRuntime.HiddenRingCleanupDistance * BlastFxRuntime.HiddenRingCleanupDistance;
+            float cleanupDistanceSqr = BlastFxRuntimeConfig.HiddenRingCleanupDistance * BlastFxRuntimeConfig.HiddenRingCleanupDistance;
 
             hiddenRingRemoveIds.Clear();
-            foreach (KeyValuePair<uint, HiddenRingState> pair in hiddenRings)
+            var e = hiddenRings.GetEnumerator();
+            while (e.MoveNext())
             {
-                HiddenRingState state = pair.Value;
+                HiddenRingState state = e.Current.Value;
                 Part part = state != null ? state.Part : null;
-                if (part == null || !IsSinglePartVessel(part.vessel))
+                if (part == null || part.vessel == null)
                 {
-                    hiddenRingRemoveIds.Add(pair.Key);
+                    hiddenRingRemoveIds.Add(e.Current.Key);
                     continue;
                 }
 
                 if (part.vessel == activeVessel)
-                {
                     continue;
-                }
 
-                if (!IsTarget(part))
+                if (!IsPyroTarget(part))
                 {
-                    hiddenRingRemoveIds.Add(pair.Key);
+                    hiddenRingRemoveIds.Add(e.Current.Key);
                     continue;
                 }
 
                 if (now < state.EarliestCleanupUt)
-                {
                     continue;
-                }
 
                 if (!ShouldCleanupHiddenRing(part, state, now, hasActivePosition, activePosition, cleanupDistanceSqr))
-                {
                     continue;
-                }
 
-                SuppressFx(part, 8.0d);
-                part.Die();
-                hiddenRingRemoveIds.Add(pair.Key);
+                if (TryDestroyHiddenRing(part))
+                    hiddenRingRemoveIds.Add(e.Current.Key);
             }
+            e.Dispose();
 
             for (int i = 0; i < hiddenRingRemoveIds.Count; i++)
             {
@@ -748,18 +772,60 @@ namespace KerbalFX.BlastFX
                 return true;
             }
 
-            if (now - state.HiddenAtUt >= BlastFxRuntime.HiddenRingMaxLifetime)
+            if (now - state.HiddenAtUt >= BlastFxRuntimeConfig.HiddenRingMaxLifetime)
             {
                 return true;
             }
 
-            if (!hasActivePosition || part.transform == null)
+            Vessel vessel = part.vessel;
+            if (vessel == null)
+            {
+                return true;
+            }
+
+            if (!vessel.loaded || part.transform == null)
+            {
+                return now >= state.EarliestCleanupUt;
+            }
+
+            if (!hasActivePosition)
             {
                 return false;
             }
 
             Vector3 delta = part.transform.position - activePosition;
             return delta.sqrMagnitude >= cleanupDistanceSqr;
+        }
+
+        private bool TryDestroyHiddenRing(Part part)
+        {
+            if (part == null)
+            {
+                return true;
+            }
+
+            Vessel vessel = part.vessel;
+            if (vessel == null)
+            {
+                return true;
+            }
+
+            if (!IsSinglePartTrackedVessel(vessel))
+            {
+                return false;
+            }
+
+            SuppressFx(part, 8.0d);
+            if (vessel.loaded)
+            {
+                part.Die();
+            }
+            else
+            {
+                vessel.Die();
+            }
+
+            return true;
         }
 
         private void SuppressFx(Part part, double seconds)
@@ -806,18 +872,15 @@ namespace KerbalFX.BlastFX
 
             double now = Planetarium.GetUniversalTime();
             staleIds.Clear();
-            foreach (KeyValuePair<uint, double> kv in suppressedFxUntilByPart)
+            var e = suppressedFxUntilByPart.GetEnumerator();
+            while (e.MoveNext())
             {
-                if (kv.Value < now)
-                {
-                    staleIds.Add(kv.Key);
-                }
+                if (e.Current.Value < now)
+                    staleIds.Add(e.Current.Key);
             }
-
+            e.Dispose();
             for (int i = 0; i < staleIds.Count; i++)
-            {
                 suppressedFxUntilByPart.Remove(staleIds[i]);
-            }
         }
 
         private static Vector3 GetAxis(Part p, Vector3 fallback)
@@ -843,33 +906,44 @@ namespace KerbalFX.BlastFX
             return fallback.sqrMagnitude > 0.0001f ? fallback.normalized : Vector3.up;
         }
 
-        private static void SpawnBurst(Part part, Vector3 axis)
+        private static void SpawnFx(FxKind fxKind, Part part, Vector3 axis)
         {
             if (part == null || part.transform == null) return;
             int layer = part.gameObject != null ? part.gameObject.layer : 0;
             float partRadius = EstimatePartRadius(part);
             string partName = part.partInfo != null ? part.partInfo.name : "unknown";
-            SpawnBurst(part.transform.position, axis, layer, partRadius, partName);
+            SpawnFx(fxKind, part.transform.position, axis, layer, partRadius, partName);
         }
 
-        private static void SpawnBurst(Vector3 position, Vector3 axis, int layer, float partRadius, string partName)
+        private static void SpawnFx(FxKind fxKind, Vector3 position, Vector3 axis, int layer, float partRadius, string partName)
+        {
+            if (fxKind == FxKind.SoftPuff)
+            {
+                SpawnSoftPuff(position, axis, layer, partRadius);
+                return;
+            }
+
+            SpawnPyroBurst(position, axis, layer, partRadius, partName);
+        }
+
+        private static void SpawnPyroBurst(Vector3 position, Vector3 axis, int layer, float partRadius, string partName)
         {
             Vector3 n = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.up;
             float size01 = Mathf.InverseLerp(0.10f, 1.60f, Mathf.Max(0.05f, partRadius));
             float detonationScale = Mathf.Lerp(0.90f, 1.90f, Mathf.Pow(size01, 0.85f));
             float ringScale = Mathf.Lerp(0.98f, 1.16f, size01);
-            float rr = Mathf.Max(0.08f, (BlastFxRuntime.BaseRadius + partRadius * BlastFxRuntime.RadiusFromPart) * ringScale);
-            int sparkCount = Mathf.Clamp(Mathf.RoundToInt(BlastFxRuntime.SparkCount * detonationScale), 1, 8000);
-            int smokeCount = Mathf.Clamp(Mathf.RoundToInt(BlastFxRuntime.SmokeCount * Mathf.Lerp(0.92f, 1.65f, size01)), 0, 6000);
-            int chunkCount = Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(24f, 132f, size01)), 8, 220);
+            float rr = Mathf.Max(0.08f, (BlastFxRuntimeConfig.BaseRadius + partRadius * BlastFxRuntimeConfig.RadiusFromPart) * ringScale);
+            int sparkCount = Mathf.Clamp(Mathf.RoundToInt(BlastFxRuntimeConfig.SparkCount * detonationScale), 1, 8000);
+            int smokeCount = Mathf.Clamp(Mathf.RoundToInt(BlastFxRuntimeConfig.SmokeCount * Mathf.Lerp(0.92f, 1.65f, size01)), 0, 6000);
+            int chunkCount = Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(20f, 116f, size01)), 8, 220);
             float sparkSpeedScale = Mathf.Lerp(0.92f, 1.68f, size01);
             float smokeSpeedScale = Mathf.Lerp(0.92f, 1.44f, size01);
-            float chunkSpeedScale = Mathf.Lerp(0.95f, 1.55f, size01);
+            float chunkSpeedScale = Mathf.Lerp(1.12f, 1.68f, size01);
             float sparkSizeScale = Mathf.Lerp(0.90f, 1.34f, size01);
             float smokeSizeScale = Mathf.Lerp(0.96f, 1.48f, size01);
-            float chunkSizeScale = Mathf.Lerp(1.00f, 2.30f, size01);
-            chunkCount = Mathf.Clamp(Mathf.RoundToInt(chunkCount * BlastFxRuntime.FragmentCountMultiplier), 6, 320);
-            chunkSpeedScale *= BlastFxRuntime.FragmentSpeedMultiplier;
+            float chunkSizeScale = Mathf.Lerp(0.84f, 1.85f, size01);
+            chunkCount = Mathf.Clamp(Mathf.RoundToInt(chunkCount * BlastFxRuntimeConfig.FragmentCountMultiplier), 6, 320);
+            chunkSpeedScale *= BlastFxRuntimeConfig.FragmentSpeedMultiplier;
 
             GameObject root = new GameObject("KerbalFX_BlastFX_PyroRing");
             root.layer = layer;
@@ -898,7 +972,7 @@ namespace KerbalFX.BlastFX
                 }
             }
 
-            Log.Info(Localizer.Format(
+            BlastFxLog.DebugLog(Localizer.Format(
                 BlastFxLoc.LogPyroRing,
                 partName,
                 rr.ToString("0.00", CultureInfo.InvariantCulture),
@@ -906,7 +980,31 @@ namespace KerbalFX.BlastFX
                 sparkCount.ToString(CultureInfo.InvariantCulture),
                 chunkCount.ToString(CultureInfo.InvariantCulture),
                 smokeCount.ToString(CultureInfo.InvariantCulture)));
-            Destroy(root, BlastFxRuntime.Cleanup);
+            Destroy(root, BlastFxRuntimeConfig.Cleanup);
+        }
+
+        private static void SpawnSoftPuff(Vector3 position, Vector3 axis, int layer, float partRadius)
+        {
+            Vector3 n = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.up;
+            float size01 = Mathf.InverseLerp(0.10f, 1.60f, Mathf.Max(0.05f, partRadius));
+            float rr = Mathf.Max(0.07f, (BlastFxRuntimeConfig.BaseRadius * 0.58f + partRadius * 0.62f) * Mathf.Lerp(1.00f, 1.14f, size01));
+            int smokeCount = Mathf.Clamp(Mathf.RoundToInt(BlastFxRuntimeConfig.SoftPuffSmokeCount * Mathf.Lerp(2.20f, 3.00f, size01)), 18, 160);
+            float smokeSpeedScale = Mathf.Lerp(1.85f, 2.35f, size01);
+            float smokeSizeScale = Mathf.Lerp(0.74f, 0.98f, size01);
+
+            GameObject root = new GameObject("KerbalFX_BlastFX_SoftPuff");
+            root.layer = layer;
+            root.transform.position = position + n * (rr * Mathf.Lerp(0.50f, 0.70f, size01));
+            root.transform.rotation = Quaternion.LookRotation(n);
+
+            ParticleSystem smoke = CreateSoftPuffSmoke(root.transform, root.layer, rr, smokeCount, smokeSpeedScale, smokeSizeScale);
+            if (smoke != null)
+            {
+                smoke.Play(true);
+                smoke.Emit(smokeCount);
+            }
+
+            Destroy(root, BlastFxRuntimeConfig.Cleanup * 0.75f);
         }
 
         private static ParticleSystem CreateSparks(Transform parent, int layer, float ringRadius, int sparkCount, float speedScale, float sizeScale)
@@ -921,10 +1019,10 @@ namespace KerbalFX.BlastFX
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
             main.maxParticles = Mathf.Clamp(sparkCount * 4, 64, 8192);
-            main.startLifetime = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SparkLife * 0.55f, BlastFxRuntime.SparkLife * 1.20f * Mathf.Lerp(0.95f, 1.12f, sizeScale - 0.9f));
-            main.startSpeed = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SparkSpeed * 0.70f * speedScale, BlastFxRuntime.SparkSpeed * 1.55f * speedScale);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SparkLife * 0.55f, BlastFxRuntimeConfig.SparkLife * 1.20f * Mathf.Lerp(0.95f, 1.12f, Mathf.Clamp01(sizeScale - 0.9f)));
+            main.startSpeed = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SparkSpeed * 0.70f * speedScale, BlastFxRuntimeConfig.SparkSpeed * 1.55f * speedScale);
             main.startSize = new ParticleSystem.MinMaxCurve(0.025f * sizeScale, 0.055f * sizeScale);
-            main.startRotation = new ParticleSystem.MinMaxCurve(-3.14159f, 3.14159f);
+            main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
 
             ParticleSystem.EmissionModule em = ps.emission;
             em.rateOverTime = 0f;
@@ -938,34 +1036,20 @@ namespace KerbalFX.BlastFX
             ParticleSystem.VelocityOverLifetimeModule vel = ps.velocityOverLifetime;
             vel.enabled = true;
             vel.space = ParticleSystemSimulationSpace.Local;
-            vel.radial = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SparkSpeed * 0.40f * speedScale, BlastFxRuntime.SparkSpeed * 1.00f * speedScale);
+            vel.radial = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SparkSpeed * 0.40f * speedScale, BlastFxRuntimeConfig.SparkSpeed * 1.00f * speedScale);
             vel.x = new ParticleSystem.MinMaxCurve(-0.35f, 0.35f);
             vel.y = new ParticleSystem.MinMaxCurve(-0.28f, 0.28f);
             vel.z = new ParticleSystem.MinMaxCurve(-0.25f, 0.25f);
 
             ParticleSystem.ColorOverLifetimeModule col = ps.colorOverLifetime;
             col.enabled = true;
-            Gradient g = new Gradient();
-            g.SetKeys(
-                new[] {
-                    new GradientColorKey(new Color(1.00f, 0.96f, 0.84f), 0.00f),
-                    new GradientColorKey(new Color(1.00f, 0.68f, 0.20f), 0.12f),
-                    new GradientColorKey(new Color(0.96f, 0.26f, 0.10f), 0.36f),
-                    new GradientColorKey(new Color(0.25f, 0.25f, 0.25f), 1.00f)
-                },
-                new[] {
-                    new GradientAlphaKey(1.00f, 0.00f),
-                    new GradientAlphaKey(0.92f, 0.12f),
-                    new GradientAlphaKey(0.35f, 0.55f),
-                    new GradientAlphaKey(0.00f, 1.00f)
-                });
-            col.color = g;
+            col.color = GetSparkGradient();
 
             ParticleSystemRenderer r = ps.GetComponent<ParticleSystemRenderer>();
             r.renderMode = ParticleSystemRenderMode.Stretch;
             r.velocityScale = 0.22f;
             r.lengthScale = 1.18f;
-            r.material = BlastFxAssets.GetSparkMaterial();
+            r.sharedMaterial = BlastFxAssets.GetSparkMaterial();
             return ps;
         }
 
@@ -981,11 +1065,11 @@ namespace KerbalFX.BlastFX
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
             main.maxParticles = Mathf.Clamp(chunkCount * 4, 24, 2048);
-            main.startLifetime = new ParticleSystem.MinMaxCurve(0.72f, 1.92f);
-            main.startSpeed = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SparkSpeed * 0.26f * speedScale, BlastFxRuntime.SparkSpeed * 0.72f * speedScale);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(0.95f, 2.20f);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SparkSpeed * 0.42f * speedScale, BlastFxRuntimeConfig.SparkSpeed * 0.98f * speedScale);
             main.startSize = new ParticleSystem.MinMaxCurve(0.06f * sizeScale, 0.22f * sizeScale);
             main.gravityModifier = new ParticleSystem.MinMaxCurve(0.04f);
-            main.startRotation = new ParticleSystem.MinMaxCurve(-3.14159f, 3.14159f);
+            main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
 
             ParticleSystem.EmissionModule em = ps.emission;
             em.rateOverTime = 0f;
@@ -999,7 +1083,7 @@ namespace KerbalFX.BlastFX
             ParticleSystem.VelocityOverLifetimeModule vel = ps.velocityOverLifetime;
             vel.enabled = true;
             vel.space = ParticleSystemSimulationSpace.Local;
-            vel.radial = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SparkSpeed * 0.55f * speedScale, BlastFxRuntime.SparkSpeed * 1.35f * speedScale);
+            vel.radial = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SparkSpeed * 0.74f * speedScale, BlastFxRuntimeConfig.SparkSpeed * 1.58f * speedScale);
             vel.x = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
             vel.y = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
             vel.z = new ParticleSystem.MinMaxCurve(-0.14f, 0.14f);
@@ -1008,8 +1092,8 @@ namespace KerbalFX.BlastFX
             limit.enabled = true;
             limit.separateAxes = false;
             limit.space = ParticleSystemSimulationSpace.Local;
-            limit.limit = new ParticleSystem.MinMaxCurve(Mathf.Lerp(3.2f, 8.6f, Mathf.Clamp01(sizeScale / 2.2f)));
-            limit.dampen = 0.62f;
+            limit.limit = new ParticleSystem.MinMaxCurve(Mathf.Lerp(2.8f, 7.2f, Mathf.Clamp01(sizeScale / 2.2f)));
+            limit.dampen = 0.48f;
 
             ParticleSystem.RotationOverLifetimeModule rot = ps.rotationOverLifetime;
             rot.enabled = true;
@@ -1017,27 +1101,12 @@ namespace KerbalFX.BlastFX
 
             ParticleSystem.ColorOverLifetimeModule col = ps.colorOverLifetime;
             col.enabled = true;
-            Gradient g = new Gradient();
-            g.SetKeys(
-                new[] {
-                    new GradientColorKey(new Color(1.00f, 0.84f, 0.46f), 0.00f),
-                    new GradientColorKey(new Color(0.98f, 0.46f, 0.18f), 0.20f),
-                    new GradientColorKey(new Color(0.36f, 0.36f, 0.36f), 0.66f),
-                    new GradientColorKey(new Color(0.16f, 0.16f, 0.16f), 1.00f)
-                },
-                new[] {
-                    new GradientAlphaKey(1.00f, 0.00f),
-                    new GradientAlphaKey(0.90f, 0.22f),
-                    new GradientAlphaKey(0.62f, 0.65f),
-                    new GradientAlphaKey(0.18f, 0.90f),
-                    new GradientAlphaKey(0.00f, 1.00f)
-                });
-            col.color = g;
+            col.color = GetChunkGradient();
 
             ParticleSystemRenderer r = ps.GetComponent<ParticleSystemRenderer>();
             r.renderMode = ParticleSystemRenderMode.Mesh;
             r.mesh = BlastFxAssets.GetChunkMesh();
-            r.material = BlastFxAssets.GetChunkMaterial();
+            r.sharedMaterial = BlastFxAssets.GetChunkMaterial();
             return ps;
         }
 
@@ -1053,10 +1122,10 @@ namespace KerbalFX.BlastFX
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
             main.maxParticles = Mathf.Clamp(smokeCount * 6, 64, 8192);
-            main.startLifetime = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SmokeLife * 0.75f, BlastFxRuntime.SmokeLife * 1.30f);
-            main.startSpeed = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SmokeSpeed * 0.55f * speedScale, BlastFxRuntime.SmokeSpeed * 1.25f * speedScale);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SmokeLife * 0.75f, BlastFxRuntimeConfig.SmokeLife * 1.30f);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SmokeSpeed * 0.55f * speedScale, BlastFxRuntimeConfig.SmokeSpeed * 1.25f * speedScale);
             main.startSize = new ParticleSystem.MinMaxCurve(0.15f * sizeScale, 0.42f * sizeScale);
-            main.startRotation = new ParticleSystem.MinMaxCurve(-3.14159f, 3.14159f);
+            main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
 
             ParticleSystem.EmissionModule em = ps.emission;
             em.rateOverTime = 0f;
@@ -1070,15 +1139,116 @@ namespace KerbalFX.BlastFX
             ParticleSystem.VelocityOverLifetimeModule vel = ps.velocityOverLifetime;
             vel.enabled = true;
             vel.space = ParticleSystemSimulationSpace.Local;
-            vel.radial = new ParticleSystem.MinMaxCurve(BlastFxRuntime.SmokeSpeed * 0.35f * speedScale, BlastFxRuntime.SmokeSpeed * 1.05f * speedScale);
+            vel.radial = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SmokeSpeed * 0.35f * speedScale, BlastFxRuntimeConfig.SmokeSpeed * 1.05f * speedScale);
             vel.x = new ParticleSystem.MinMaxCurve(-0.32f, 0.32f);
             vel.y = new ParticleSystem.MinMaxCurve(-0.16f, 0.16f);
             vel.z = new ParticleSystem.MinMaxCurve(-0.22f, 0.22f);
 
             ParticleSystem.ColorOverLifetimeModule col = ps.colorOverLifetime;
             col.enabled = true;
-            Gradient g = new Gradient();
-            g.SetKeys(
+            col.color = GetSmokeGradient();
+
+            ParticleSystemRenderer r = ps.GetComponent<ParticleSystemRenderer>();
+            r.renderMode = ParticleSystemRenderMode.Billboard;
+            r.sharedMaterial = BlastFxAssets.GetSmokeMaterial();
+            return ps;
+        }
+
+        private static ParticleSystem CreateSoftPuffSmoke(Transform parent, int layer, float ringRadius, int smokeCount, float speedScale, float sizeScale)
+        {
+            GameObject go = new GameObject("BlastFX_SoftPuffSmoke");
+            go.transform.SetParent(parent, false);
+            go.layer = layer;
+            ParticleSystem ps = go.AddComponent<ParticleSystem>();
+
+            ParticleSystem.MainModule main = ps.main;
+            main.loop = false;
+            main.playOnAwake = false;
+            main.simulationSpace = ParticleSystemSimulationSpace.World;
+            main.maxParticles = Mathf.Clamp(smokeCount * 12, 64, 1408);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SoftPuffLife * 0.82f, BlastFxRuntimeConfig.SoftPuffLife * 1.08f);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SoftPuffSpeed * 1.35f * speedScale, BlastFxRuntimeConfig.SoftPuffSpeed * 2.05f * speedScale);
+            main.startSize = new ParticleSystem.MinMaxCurve(0.10f * sizeScale, 0.24f * sizeScale);
+            main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
+
+            ParticleSystem.EmissionModule em = ps.emission;
+            em.rateOverTime = 0f;
+
+            ParticleSystem.ShapeModule sh = ps.shape;
+            sh.shapeType = ParticleSystemShapeType.Circle;
+            sh.radius = ringRadius * 0.96f;
+            sh.radiusThickness = 0.12f;
+            sh.arc = 360f;
+
+            ParticleSystem.VelocityOverLifetimeModule vel = ps.velocityOverLifetime;
+            vel.enabled = true;
+            vel.space = ParticleSystemSimulationSpace.Local;
+            vel.radial = new ParticleSystem.MinMaxCurve(BlastFxRuntimeConfig.SoftPuffSpeed * 0.86f * speedScale, BlastFxRuntimeConfig.SoftPuffSpeed * 1.72f * speedScale);
+            vel.x = new ParticleSystem.MinMaxCurve(-0.16f, 0.16f);
+            vel.y = new ParticleSystem.MinMaxCurve(-0.08f, 0.08f);
+            vel.z = new ParticleSystem.MinMaxCurve(-0.14f, 0.14f);
+
+            ParticleSystem.ColorOverLifetimeModule col = ps.colorOverLifetime;
+            col.enabled = true;
+            col.color = GetSoftPuffGradient();
+
+            ParticleSystemRenderer r = ps.GetComponent<ParticleSystemRenderer>();
+            r.renderMode = ParticleSystemRenderMode.Billboard;
+            r.sharedMaterial = BlastFxAssets.GetSmokeMaterial();
+            return ps;
+        }
+
+        private static Gradient cachedSparkGradient;
+        private static Gradient cachedChunkGradient;
+        private static Gradient cachedSmokeGradient;
+        private static Gradient cachedSoftPuffGradient;
+
+        private static Gradient GetSparkGradient()
+        {
+            if (cachedSparkGradient != null) return cachedSparkGradient;
+            cachedSparkGradient = new Gradient();
+            cachedSparkGradient.SetKeys(
+                new[] {
+                    new GradientColorKey(new Color(1.00f, 0.96f, 0.84f), 0.00f),
+                    new GradientColorKey(new Color(1.00f, 0.68f, 0.20f), 0.12f),
+                    new GradientColorKey(new Color(0.96f, 0.26f, 0.10f), 0.36f),
+                    new GradientColorKey(new Color(0.25f, 0.25f, 0.25f), 1.00f)
+                },
+                new[] {
+                    new GradientAlphaKey(1.00f, 0.00f),
+                    new GradientAlphaKey(0.92f, 0.12f),
+                    new GradientAlphaKey(0.35f, 0.55f),
+                    new GradientAlphaKey(0.00f, 1.00f)
+                });
+            return cachedSparkGradient;
+        }
+
+        private static Gradient GetChunkGradient()
+        {
+            if (cachedChunkGradient != null) return cachedChunkGradient;
+            cachedChunkGradient = new Gradient();
+            cachedChunkGradient.SetKeys(
+                new[] {
+                    new GradientColorKey(new Color(1.00f, 0.84f, 0.46f), 0.00f),
+                    new GradientColorKey(new Color(0.98f, 0.46f, 0.18f), 0.20f),
+                    new GradientColorKey(new Color(0.36f, 0.36f, 0.36f), 0.66f),
+                    new GradientColorKey(new Color(0.16f, 0.16f, 0.16f), 1.00f)
+                },
+                new[] {
+                    new GradientAlphaKey(1.00f, 0.00f),
+                    new GradientAlphaKey(0.94f, 0.26f),
+                    new GradientAlphaKey(0.68f, 0.72f),
+                    new GradientAlphaKey(0.24f, 0.92f),
+                    new GradientAlphaKey(0.00f, 1.00f)
+                });
+            return cachedChunkGradient;
+        }
+
+        private static Gradient GetSmokeGradient()
+        {
+            if (cachedSmokeGradient != null) return cachedSmokeGradient;
+            cachedSmokeGradient = new Gradient();
+            cachedSmokeGradient.SetKeys(
                 new[] {
                     new GradientColorKey(new Color(0.50f, 0.50f, 0.50f), 0.00f),
                     new GradientColorKey(new Color(0.36f, 0.36f, 0.36f), 0.45f),
@@ -1090,12 +1260,27 @@ namespace KerbalFX.BlastFX
                     new GradientAlphaKey(0.08f, 0.75f),
                     new GradientAlphaKey(0.00f, 1.00f)
                 });
-            col.color = g;
+            return cachedSmokeGradient;
+        }
 
-            ParticleSystemRenderer r = ps.GetComponent<ParticleSystemRenderer>();
-            r.renderMode = ParticleSystemRenderMode.Billboard;
-            r.material = BlastFxAssets.GetSmokeMaterial();
-            return ps;
+        private static Gradient GetSoftPuffGradient()
+        {
+            if (cachedSoftPuffGradient != null) return cachedSoftPuffGradient;
+            cachedSoftPuffGradient = new Gradient();
+            cachedSoftPuffGradient.SetKeys(
+                new[] {
+                    new GradientColorKey(new Color(0.98f, 0.98f, 0.98f), 0.00f),
+                    new GradientColorKey(new Color(0.92f, 0.92f, 0.92f), 0.34f),
+                    new GradientColorKey(new Color(0.74f, 0.74f, 0.74f), 1.00f)
+                },
+                new[] {
+                    new GradientAlphaKey(0.76f, 0.00f),
+                    new GradientAlphaKey(0.66f, 0.20f),
+                    new GradientAlphaKey(0.30f, 0.68f),
+                    new GradientAlphaKey(0.08f, 0.90f),
+                    new GradientAlphaKey(0.00f, 1.00f)
+                });
+            return cachedSoftPuffGradient;
         }
 
         private static float EstimatePartRadius(Part p)
@@ -1120,10 +1305,9 @@ namespace KerbalFX.BlastFX
             }
             catch (Exception ex)
             {
-                Log.DebugException("estimate-part-radius", ex);
+                BlastFxLog.DebugException("estimate-part-radius", ex);
             }
             return 0.30f;
         }
     }
 }
-

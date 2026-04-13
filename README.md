@@ -21,18 +21,24 @@ Engine-ground interaction and touchdown effects.
 
 - Engine plume-ground puffs near terrain.
 - Touchdown burst on harder landings.
-- Default non-simplified mode with volumetric behavior.
-- Optional simplified mode for lower performance cost.
+- Non-simplified and simplified modes.
 - Light-aware behavior and per-body tuning through config.
 - Compatible approach with Waterfall.
 
+### KerbalFX - AeroFX
+Atmospheric ribbon condensation for wings, control surfaces, and fins.
+
+- Ribbon emitters attached to suitable wing-like parts.
+- Up to four emitters per vessel.
+- Activation based on speed, density, dynamic pressure, and maneuver load.
+
 ### KerbalFX - BlastFX
-WIP. Only separator blast FX for now.
+FX module for separators and decouplers.
 
 - Triggers blast effects on supported separator parts.
-- Includes sparks/smoke/chunk fragments with size scaling by separator size.
-- Supports hidden-ring cleanup flow for auto-shroud-friendly behavior.
-- Uses config-driven targeting and cleanup controls.
+- Spawns sparks, smoke, and chunk fragments on separator activation.
+- Softer smoke-puff burst for ordinary decouplers.
+- Size-based effects scaling.
 
 ## Installation
 
@@ -55,12 +61,17 @@ Rover Dust:
 Impact Puffs:
 - `GameData/KerbalFX/ImpactPuffs/KerbalFX_ImpactPuffs.cfg`
 
+AeroFX:
+- `GameData/KerbalFX/AeroFX/KerbalFX_AeroFX.cfg`
+
 BlastFX:
 - `GameData/KerbalFX/BlastFX/KerbalFX_BlastFX.cfg`
 
 Difficulty Settings:
-- `KerbalFX` section
-- `Rover Dust`, `Impact Puffs`, `BlastFX` module pages
+- `KerbalFX: Main`
+- `Rover Dust`, `Impact Puffs`
+- `KerbalFX: Extras`
+- `BlastFX`, `AeroFX`
 
 ## Compatibility
 

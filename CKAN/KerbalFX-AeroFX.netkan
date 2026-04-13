@@ -1,0 +1,8 @@
+identifier: KerbalFX-AeroFX
+name: KerbalFX - AeroFX
+abstract: Atmospheric ribbon condensation module for KerbalFX.
+$kref: '#/ckan/github/bimo1d/KerbalFX/asset_match/^KerbalFX-AeroFX-.*\.zip$'
+x_netkan_version_edit: '^[vV]?(?<version>.+)$'
+$vref: '#/ckan/ksp-avc'
+depends:
+  - name: KerbalFX-Core

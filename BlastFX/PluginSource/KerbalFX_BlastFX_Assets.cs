@@ -15,28 +15,31 @@ namespace KerbalFX.BlastFX
         public static Material GetSparkMaterial()
         {
             if (sparkMat != null) return sparkMat;
-            Shader sh = Shader.Find("Legacy Shaders/Particles/Additive") ?? Shader.Find("Legacy Shaders/Particles/Alpha Blended") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
+            Shader sh = KerbalFxUtil.FindParticleShader(additive: true);
             if (sh == null) return null;
-            sparkMat = new Material(sh) { name = "KerbalFX_BlastFXSpark", color = Color.white, mainTexture = GetSparkTexture() };
+            sparkMat = new Material(sh);
+            sparkMat.name = "KerbalFX_BlastFXSpark";
+            sparkMat.color = Color.white;
+            sparkMat.mainTexture = GetSparkTexture();
             return sparkMat;
         }
 
         public static Material GetSmokeMaterial()
         {
             if (smokeMat != null) return smokeMat;
-            Shader sh = Shader.Find("Legacy Shaders/Particles/Alpha Blended") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
+            Shader sh = KerbalFxUtil.FindParticleShader();
             if (sh == null) return null;
-            smokeMat = new Material(sh) { name = "KerbalFX_BlastFXSmoke", color = Color.white, mainTexture = GetSmokeTexture() };
+            smokeMat = new Material(sh);
+            smokeMat.name = "KerbalFX_BlastFXSmoke";
+            smokeMat.color = Color.white;
+            smokeMat.mainTexture = GetSmokeTexture();
             return smokeMat;
         }
 
         public static Material GetChunkMaterial()
         {
             if (chunkMat != null) return chunkMat;
-            Shader sh = Shader.Find("Legacy Shaders/Transparent/Diffuse")
-                ?? Shader.Find("Legacy Shaders/Particles/Alpha Blended")
-                ?? Shader.Find("Particles/Standard Unlit")
-                ?? Shader.Find("Sprites/Default");
+            Shader sh = KerbalFxUtil.FindTransparentShader();
             if (sh == null) return null;
             chunkMat = new Material(sh)
             {

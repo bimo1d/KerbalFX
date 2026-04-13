@@ -1,5 +1,5 @@
-﻿{
-  "NAME": "KerbalFX-RoverDust",
+{
+  "NAME": "KerbalFX-AeroFX",
   "URL": "https://github.com/bimo1d/KerbalFX",
   "DOWNLOAD": "https://github.com/bimo1d/KerbalFX/releases",
   "VERSION": {
@@ -19,4 +19,3 @@
     "PATCH": 99
   }
 }
-

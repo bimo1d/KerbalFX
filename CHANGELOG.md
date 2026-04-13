@@ -1,3 +1,18 @@
+## 0.6.1
+- Added new module: **AeroFX**.
+- AeroFX adds atmospheric ribbon condensation trails to suitable wings, control surfaces, and fins.
+- AeroFX supports up to four ribbon emitters per vessel.
+- Expanded **BlastFX** beyond pyro rings with a separate soft-puff path for ordinary decouplers.
+- Retuned BlastFX separator visuals for denser decoupler bursts and sharper pyro fragment response.
+- Continued cleanup of shared FX runtime, module docs, localization.
+- Rebuilt `KerbalFX.Core.dll`.
+
+## 0.6c
+- Continued cleanup after 0.6b.
+- Moved duplicated utility, surface-color, and sunlight helpers into shared core source.
+- Reduced duplicated module-side helper code in Rover Dust and Impact Puffs.
+- Simplified cfg for release stability.
+
 ## 0.6b
 - New module: **BlastFX** (separator pyro-ring FX only for now).
 - Continued technical-debt cleanup: split large runtime code into focused source files for Impact Puffs.

@@ -12,23 +12,11 @@ namespace KerbalFX.ImpactPuffs
         public static Material GetSharedMaterial()
         {
             if (sharedMaterial != null)
-            {
                 return sharedMaterial;
-            }
 
-            Shader shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended");
+            Shader shader = KerbalFxUtil.FindParticleShader();
             if (shader == null)
-            {
-                shader = Shader.Find("Particles/Standard Unlit");
-            }
-            if (shader == null)
-            {
-                shader = Shader.Find("Sprites/Default");
-            }
-            if (shader == null)
-            {
                 return null;
-            }
 
             sharedMaterial = new Material(shader);
             sharedMaterial.name = "KerbalFX_ImpactPuffsMaterial";
@@ -40,23 +28,11 @@ namespace KerbalFX.ImpactPuffs
         public static Material GetBurstMaterial()
         {
             if (sharedBurstMaterial != null)
-            {
                 return sharedBurstMaterial;
-            }
 
-            Shader shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended");
+            Shader shader = KerbalFxUtil.FindParticleShader();
             if (shader == null)
-            {
-                shader = Shader.Find("Particles/Standard Unlit");
-            }
-            if (shader == null)
-            {
-                shader = Shader.Find("Sprites/Default");
-            }
-            if (shader == null)
-            {
                 return GetSharedMaterial();
-            }
 
             sharedBurstMaterial = new Material(shader);
             sharedBurstMaterial.name = "KerbalFX_ImpactPuffsBurstMaterial";

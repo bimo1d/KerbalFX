@@ -6,10 +6,11 @@ Lightweight wheel-dust visual module for Kerbal Space Program.
 
 - `KerbalFX Core`
 
-## Config-driven tuning
+## Config
 
-- Shared/core values: `GameData/KerbalFX/Core/KerbalFX_Core.cfg` (`KERBALFX_CORE`)
-- Module values: `GameData/KerbalFX/RoverDust/KerbalFX_RoverDust.cfg` (`KERBALFX_ROVER_DUST`)
+- `GameData/KerbalFX/RoverDust/KerbalFX_RoverDust.cfg` (`KERBALFX_ROVER_DUST`)
+- Config is limited to body visibility tuning for now for release stability.
+- Toggles and quality settings in Difficulty Settings.
 
 ## Notes
 
