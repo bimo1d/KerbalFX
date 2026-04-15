@@ -30,6 +30,8 @@ namespace KerbalFX.ImpactPuffs
             ImpactPuffsConfig.Refresh();
             ImpactPuffsRuntimeConfig.Refresh();
             EngineGroundPuffEmitter.CleanupSunOcclusionCache(true);
+            RefreshControllers(0f);
+            controllerRefreshTimer = ControllerRefreshInterval;
             ImpactPuffsLog.Info(Localizer.Format(ImpactPuffsLoc.LogBootstrapStart));
         }
 
@@ -82,8 +84,9 @@ namespace KerbalFX.ImpactPuffs
                 return;
             }
 
+            float refreshElapsed = ControllerRefreshInterval - controllerRefreshTimer;
             controllerRefreshTimer = ControllerRefreshInterval;
-            RefreshControllers();
+            RefreshControllers(Mathf.Max(0f, refreshElapsed));
         }
 
         private void TickControllers(float dt)
@@ -126,13 +129,13 @@ namespace KerbalFX.ImpactPuffs
             e.Dispose();
         }
 
-        private void RefreshControllers()
+        private void RefreshControllers(float refreshElapsed)
         {
-            RemoveInvalidControllers();
+            RemoveInvalidControllers(refreshElapsed);
             AttachOrRefreshLoadedVessels();
         }
 
-        private void RemoveInvalidControllers()
+        private void RemoveInvalidControllers(float refreshElapsed)
         {
             removeControllerIds.Clear();
             var e = controllers.GetEnumerator();
@@ -142,7 +145,7 @@ namespace KerbalFX.ImpactPuffs
                 {
                     float invalidTimer;
                     invalidControllerTimers.TryGetValue(e.Current.Key, out invalidTimer);
-                    invalidTimer += ControllerRefreshInterval;
+                    invalidTimer += refreshElapsed;
                     invalidControllerTimers[e.Current.Key] = invalidTimer;
 
                     if (invalidTimer >= ControllerInvalidGraceSeconds)
@@ -215,12 +218,7 @@ namespace KerbalFX.ImpactPuffs
 
         private static bool IsSupportedVessel(Vessel vessel)
         {
-            if (vessel == null || !vessel.loaded || vessel.packed || vessel.isEVA)
-            {
-                return false;
-            }
-
-            return vessel.vesselType != VesselType.Flag && vessel.vesselType != VesselType.Debris;
+            return KerbalFxVesselUtil.IsSupportedFlightVessel(vessel);
         }
 
         private void OnDestroy()
@@ -246,6 +244,7 @@ namespace KerbalFX.ImpactPuffs
         private readonly List<ModuleEngines> activeEngineModules = new List<ModuleEngines>(8);
         private TouchdownBurstEmitter touchdownEmitter;
         private int cachedPartCount = -1;
+        private uint cachedPartSignature;
         private int acceptedEngineCount = 0;
         private static readonly string[] EngineTypeRejectTokens = { "mono", "rcs", "turbine", "jet", "scram", "airbreathing" };
         private static readonly string[] EngineIdRejectTokens = { "rcs", "monoprop", "mono", "vernier" };
@@ -279,7 +278,8 @@ namespace KerbalFX.ImpactPuffs
                 return;
             }
 
-            if (vessel.parts.Count != cachedPartCount)
+            if (vessel.parts.Count != cachedPartCount
+                || KerbalFxUtil.ComputeVesselPartSignature(vessel) != cachedPartSignature)
             {
                 RebuildEmitters();
             }
@@ -344,6 +344,7 @@ namespace KerbalFX.ImpactPuffs
         {
             DisposeEmitters();
             cachedPartCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
+            cachedPartSignature = vessel != null ? KerbalFxUtil.ComputeVesselPartSignature(vessel) : 0u;
             acceptedEngineCount = 0;
 
             if (vessel == null || vessel.parts == null)
@@ -573,45 +574,7 @@ namespace KerbalFX.ImpactPuffs
 
         private static string ReadEngineTypeName(ModuleEngines engine)
         {
-            if (engine == null)
-            {
-                return string.Empty;
-            }
-
-            Type type = engine.GetType();
-            if (type == null)
-            {
-                return string.Empty;
-            }
-
-            try
-            {
-                System.Reflection.FieldInfo field = type.GetField("engineType");
-                if (field != null)
-                {
-                    object fieldValue = field.GetValue(engine);
-                    if (fieldValue != null)
-                    {
-                        return fieldValue.ToString().ToLowerInvariant();
-                    }
-                }
-
-                System.Reflection.PropertyInfo property = type.GetProperty("engineType");
-                if (property != null)
-                {
-                    object propertyValue = property.GetValue(engine, null);
-                    if (propertyValue != null)
-                    {
-                        return propertyValue.ToString().ToLowerInvariant();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                ImpactPuffsLog.DebugLog("ReadEngineTypeName reflection failed: " + ex.Message);
-            }
-
-            return string.Empty;
+            return KerbalFxUtil.ReadMemberStringLowerInvariant(engine, "engineType");
         }
 
         private static string SafeLower(string value)
@@ -622,4 +585,3 @@ namespace KerbalFX.ImpactPuffs
     }
 
 }
-

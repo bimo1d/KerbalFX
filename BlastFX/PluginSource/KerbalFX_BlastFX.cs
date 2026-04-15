@@ -7,7 +7,6 @@ namespace KerbalFX.BlastFX
 {
     internal static class BlastFxLoc
     {
-        public const string UiSection = "#LOC_KerbalFX_UI_Section";
         public const string UiSectionExtras = "#LOC_KerbalFX_UI_SectionExtras";
         public const string UiTitle = "#LOC_KerbalFX_BlastFX_UI_Title";
         public const string UiEnable = "#LOC_KerbalFX_BlastFX_UI_Enable";
@@ -65,7 +64,7 @@ namespace KerbalFX.BlastFX
     internal static class BlastFxConfig
     {
         public static bool Enabled = true;
-        public static bool Debug;
+        public static bool DebugLogging;
         public static int Revision;
         private static bool initialized;
 
@@ -83,14 +82,14 @@ namespace KerbalFX.BlastFX
                 }
             }
 
-            bool changed = !initialized || en != Enabled || dbg != Debug;
+            bool changed = !initialized || en != Enabled || dbg != DebugLogging;
             Enabled = en;
-            Debug = dbg;
+            DebugLogging = dbg;
             if (changed)
             {
                 initialized = true;
                 Revision++;
-                BlastFxLog.Info(Localizer.Format(BlastFxLoc.LogSettings, Enabled, Debug));
+                BlastFxLog.Info(Localizer.Format(BlastFxLoc.LogSettings, Enabled, DebugLogging));
             }
         }
     }
@@ -218,13 +217,13 @@ namespace KerbalFX.BlastFX
 
         public static void DebugLog(string msg)
         {
-            if (!BlastFxConfig.Debug) return;
+            if (!BlastFxConfig.DebugLogging) return;
             Debug.Log("[KerbalFX] " + msg);
         }
 
         public static void DebugException(string scope, Exception ex)
         {
-            if (!BlastFxConfig.Debug || ex == null) return;
+            if (!BlastFxConfig.DebugLogging || ex == null) return;
             Debug.Log("[KerbalFX] " + scope + " failed: " + ex.Message);
         }
     }

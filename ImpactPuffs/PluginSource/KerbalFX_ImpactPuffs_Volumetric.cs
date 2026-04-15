@@ -15,14 +15,12 @@ namespace KerbalFX.ImpactPuffs
         private float phaseA;
         private float phaseB;
         private float phaseC;
-        private float phaseD;
 
         private const float LightPow = 1.08f;
         private const float DensityMax = 3.2f;
         private const float PressureBoostMax = 1.60f;
         private const float AlphaMax = 0.27f;
         private const int SingleMaxParticles = 16000;
-        private const int MultiMaxParticles = 28000;
         private const float RateMinThreshold = 0.25f;
 
         public VolumetricPlumeField(Transform parent, int layer)
@@ -41,7 +39,6 @@ namespace KerbalFX.ImpactPuffs
             phaseA = 0.6f + seed;
             phaseB = 1.2f + seed * 1.17f;
             phaseC = 1.8f + seed * 1.31f;
-            phaseD = 2.4f + seed * 0.93f;
 
             StopImmediate();
         }
@@ -67,15 +64,11 @@ namespace KerbalFX.ImpactPuffs
             phaseA += dt * Mathf.Lerp(2.2f, 5.4f, pressure);
             phaseB += dt * Mathf.Lerp(1.7f, 4.1f, pressure);
             phaseC += dt * Mathf.Lerp(1.1f, 2.9f, pressure);
-            phaseD += dt * Mathf.Lerp(2.8f, 6.8f, pressure);
 
             float pulsePrimary = 0.5f + 0.5f * Mathf.Sin(phaseA);
             float pulseSecondary = 0.5f + 0.5f * Mathf.Sin(phaseB);
             float pulse = Mathf.Lerp(0.35f, 1.45f, pulsePrimary * 0.58f + pulseSecondary * 0.42f);
             float burstGate = Mathf.Lerp(0.60f, 1.36f, 0.5f + 0.5f * Mathf.Sin(phaseC));
-
-            float driftX = Mathf.Sin(phaseA * 0.96f + phaseD * 0.24f);
-            float driftZ = Mathf.Cos(phaseB * 1.08f - phaseA * 0.19f);
 
             root.transform.rotation = worldRotation;
             float density = Mathf.Clamp(targetRate / (float)SingleMaxParticles, 0f, DensityMax);
@@ -87,38 +80,20 @@ namespace KerbalFX.ImpactPuffs
             float smoothIn = Mathf.Clamp01(dt * 4.8f);
             float smoothOut = Mathf.Clamp01(dt * 7.2f);
 
-            if (activeEngineCount <= 1)
-            {
-                float coreTarget = Mathf.Clamp(targetRate * 0.58f * qualityBoost * pulse, 0f, 36000f);
-                float shellTarget = Mathf.Clamp(targetRate * 0.44f * qualityBoost * burstGate, 0f, 30000f);
-                float loftTarget = Mathf.Clamp(targetRate * 0.26f * qualityBoost * Mathf.Lerp(pulse, burstGate, 0.5f), 0f, 22000f);
+            float coreTarget = Mathf.Clamp(targetRate * 0.58f * qualityBoost * pulse, 0f, 36000f);
+            float shellTarget = Mathf.Clamp(targetRate * 0.44f * qualityBoost * burstGate, 0f, 30000f);
+            float loftTarget = Mathf.Clamp(targetRate * 0.26f * qualityBoost * Mathf.Lerp(pulse, burstGate, 0.5f), 0f, 22000f);
 
-                coreRate = Mathf.Lerp(coreRate, coreTarget, coreTarget > coreRate ? smoothIn : smoothOut);
-                shellRate = Mathf.Lerp(shellRate, shellTarget, shellTarget > shellRate ? smoothIn : smoothOut);
-                loftRate = Mathf.Lerp(loftRate, loftTarget, loftTarget > loftRate ? smoothIn : smoothOut);
+            coreRate = Mathf.Lerp(coreRate, coreTarget, coreTarget > coreRate ? smoothIn : smoothOut);
+            shellRate = Mathf.Lerp(shellRate, shellTarget, shellTarget > shellRate ? smoothIn : smoothOut);
+            loftRate = Mathf.Lerp(loftRate, loftTarget, loftTarget > loftRate ? smoothIn : smoothOut);
 
-                UpdateLayerSingle(core, coreRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.30f), 0.86f, 0.34f, 0.36f, pulse, centeredness);
-                UpdateLayerSingle(shell, shellRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.22f), 1.20f, 0.44f, 0.30f, burstGate, centeredness);
-                UpdateLayerSingle(loft, loftRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.38f), 1.34f, 0.60f, 0.20f, pulse * 0.90f, centeredness);
-            }
-            else
-            {
-                float coreTarget = Mathf.Clamp(targetRate * 0.60f * qualityBoost * pulse, 0f, 32000f);
-                float shellTarget = Mathf.Clamp(targetRate * 0.46f * qualityBoost * burstGate, 0f, 26000f);
-                float loftTarget = Mathf.Clamp(targetRate * 0.20f * qualityBoost * Mathf.Lerp(pulse, burstGate, 0.5f), 0f, 14000f);
-                float floorPulse = Mathf.Lerp(0.88f, 1.18f, pulse);
-                coreTarget = Mathf.Max(coreTarget, 1150f * qualityBoost * floorPulse);
-                shellTarget = Mathf.Max(shellTarget, 820f * qualityBoost * floorPulse);
-                loftTarget = Mathf.Max(loftTarget, 360f * qualityBoost * floorPulse);
+            float petalBias = (activeEngineCount > 1) ? Mathf.Lerp(0.30f, 0.72f, 1f - centeredness) : 0f;
+            float radialScale = (activeEngineCount > 1) ? Mathf.Lerp(0.60f, 0.18f, 1f - centeredness) : 1f;
 
-                coreRate = Mathf.Lerp(coreRate, coreTarget, coreTarget > coreRate ? smoothIn : smoothOut);
-                shellRate = Mathf.Lerp(shellRate, shellTarget, shellTarget > shellRate ? smoothIn : smoothOut);
-                loftRate = Mathf.Lerp(loftRate, loftTarget, loftTarget > loftRate ? smoothIn : smoothOut);
-
-                UpdateLayerMulti(core, coreRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.30f), 0.92f, 0.16f, 0.32f, driftX, driftZ, pulse);
-                UpdateLayerMulti(shell, shellRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.22f), 1.16f, 0.22f, 0.26f, -driftX * 0.78f, driftZ * 0.86f, burstGate);
-                UpdateLayerMulti(loft, loftRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.38f), 1.34f, 0.28f, 0.16f, driftX * 0.56f, -driftZ * 0.42f, pulse * 0.90f);
-            }
+            UpdateLayerSingle(core, coreRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.30f), 0.86f, 0.34f, 0.36f, pulse, centeredness, petalBias, radialScale);
+            UpdateLayerSingle(shell, shellRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.22f), 1.20f, 0.44f, 0.30f, burstGate, centeredness, petalBias, radialScale);
+            UpdateLayerSingle(loft, loftRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.38f), 1.34f, 0.60f, 0.20f, pulse * 0.90f, centeredness, petalBias, radialScale);
         }
 
         public void StopSoft(float dt)
@@ -171,7 +146,9 @@ namespace KerbalFX.ImpactPuffs
             float liftScale,
             float alphaScale,
             float pulse,
-            float centeredness
+            float centeredness,
+            float petalBias,
+            float radialScale
         )
         {
             if (ps == null) return;
@@ -180,14 +157,15 @@ namespace KerbalFX.ImpactPuffs
 
             float lifeQuality = Mathf.Lerp(0.86f, 1.26f, qualityNorm);
             ParticleSystem.MainModule main = ps.main;
-            main.startLifetime = new ParticleSystem.MinMaxCurve(0.52f * lifeQuality, 2.62f * sizeScale * lifeQuality);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(0.38f * lifeQuality, 1.40f * sizeScale * lifeQuality);
             main.gravityModifier = 0.03f;
             main.maxParticles = SingleMaxParticles;
 
             float dirSpeed = Mathf.Lerp(0.12f, 0.50f, qualityNorm);
+            float petalSpeedBoost = 1f + petalBias * 2.2f;
             main.startSpeed = new ParticleSystem.MinMaxCurve(
-                Mathf.Lerp(0.06f, 0.02f, centeredness),
-                Mathf.Lerp(dirSpeed, 0.05f, centeredness));
+                Mathf.Lerp(0.06f, 0.02f, centeredness) * petalSpeedBoost,
+                Mathf.Lerp(dirSpeed, 0.05f, centeredness) * petalSpeedBoost);
 
             ParticleSystem.ShapeModule shape = ps.shape;
             shape.angle = 82f;
@@ -202,75 +180,17 @@ namespace KerbalFX.ImpactPuffs
             float liftMult = Mathf.Lerp(1.0f, 1.85f, centeredness);
 
             float turbulence = lateral * 0.06f;
+            float outward = lateral * petalBias;
             velocity.x = new ParticleSystem.MinMaxCurve(-turbulence, turbulence);
-            velocity.y = new ParticleSystem.MinMaxCurve(-turbulence, turbulence);
+            velocity.y = new ParticleSystem.MinMaxCurve(-turbulence + outward * 0.55f, turbulence + outward * 1.25f);
             velocity.z = new ParticleSystem.MinMaxCurve(lift * liftMult * 0.20f, lift * liftMult * 0.80f);
-            velocity.radial = new ParticleSystem.MinMaxCurve(lateral * 0.45f, lateral * 1.10f);
+            velocity.radial = new ParticleSystem.MinMaxCurve(lateral * 0.28f * radialScale, lateral * 0.80f * radialScale);
 
             ParticleSystem.NoiseModule noise = ps.noise;
             noise.enabled = true;
             noise.strength = Mathf.Lerp(1.20f, 5.00f, density / DensityMax) * Mathf.Lerp(1.05f, 1.55f, pulse);
             noise.frequency = Mathf.Lerp(0.52f, 1.62f, pressureBoost / PressureBoostMax);
             noise.scrollSpeed = Mathf.Lerp(0.40f, 1.92f, pressureBoost / PressureBoostMax);
-            noise.damping = true;
-        }
-
-        private static void UpdateLayerMulti(
-            ParticleSystem ps,
-            float rate,
-            float pressureBoost,
-            float density,
-            float qualityNorm,
-            float lightFactor,
-            Color color,
-            float sizeScale,
-            float liftScale,
-            float alphaScale,
-            float driftX,
-            float driftZ,
-            float pulse
-        )
-        {
-            if (ps == null) return;
-
-            ApplyCommonLayerParams(ps, rate, lightFactor, pressureBoost, density, alphaScale, pulse, color, sizeScale, qualityNorm);
-
-            float lifeQuality = Mathf.Lerp(0.86f, 1.26f, qualityNorm);
-            ParticleSystem.MainModule main = ps.main;
-            main.startLifetime = new ParticleSystem.MinMaxCurve(0.48f * lifeQuality, 2.10f * sizeScale * lifeQuality);
-            main.gravityModifier = 0.012f;
-            main.maxParticles = MultiMaxParticles;
-
-            main.startSpeed = new ParticleSystem.MinMaxCurve(0.08f, 0.65f);
-
-            ParticleSystem.ShapeModule shape = ps.shape;
-            shape.angle = Mathf.Lerp(42f, 74f, pressureBoost / PressureBoostMax);
-            shape.radius = Mathf.Lerp(0.52f, 2.40f, density / DensityMax) * sizeScale * Mathf.Lerp(0.82f, 1.18f, pulse);
-            shape.radiusThickness = 0.72f;
-
-            ParticleSystem.VelocityOverLifetimeModule velocity = ps.velocityOverLifetime;
-            velocity.enabled = true;
-            velocity.space = ParticleSystemSimulationSpace.Local;
-            float lateral = Mathf.Lerp(3.6f, 18.0f, density / DensityMax) * sizeScale;
-            float lift = Mathf.Lerp(0.16f, 1.80f, pressureBoost / PressureBoostMax) * liftScale;
-            float driftLateral = driftX * lateral * 1.05f;
-            velocity.x = new ParticleSystem.MinMaxCurve((-lateral * 0.60f) + driftLateral, (lateral * 1.30f) + driftLateral);
-            velocity.y = new ParticleSystem.MinMaxCurve(lift * 0.14f, lift * 1.20f);
-            float driftForward = driftZ * lateral * 0.92f;
-            float zMin = Mathf.Max(-lateral * 0.10f, driftForward - lateral * 0.18f);
-            float zMax = (lateral * 1.55f) + driftForward;
-            if (zMax <= zMin + 0.05f)
-            {
-                zMax = zMin + 0.05f;
-            }
-            velocity.z = new ParticleSystem.MinMaxCurve(zMin, zMax);
-            velocity.radial = new ParticleSystem.MinMaxCurve(lateral * 0.15f, lateral * 0.55f);
-
-            ParticleSystem.NoiseModule noise = ps.noise;
-            noise.enabled = true;
-            noise.strength = Mathf.Lerp(1.40f, 5.20f, density / DensityMax) * Mathf.Lerp(0.88f, 1.50f, pulse);
-            noise.frequency = Mathf.Lerp(0.58f, 1.85f, pressureBoost / PressureBoostMax);
-            noise.scrollSpeed = Mathf.Lerp(0.70f, 2.80f, pressureBoost / PressureBoostMax);
             noise.damping = true;
         }
 

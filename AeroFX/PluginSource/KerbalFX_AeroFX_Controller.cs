@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using KSP.Localization;
 using UnityEngine;
 
@@ -30,7 +31,7 @@ namespace KerbalFX.AeroFX
 
     internal sealed class VesselAeroController
     {
-        private const int MaxEmitters = 4;
+        private const int MaxEmitters = 6;
         private const float SampleDebugInterval = 0.8f;
         private const float AnchorSwitchMargin = 0.45f;
         private const float EmitterGraceSeconds = 4.0f;
@@ -39,11 +40,19 @@ namespace KerbalFX.AeroFX
         private readonly WingtipRibbonAnchor[] anchors = new WingtipRibbonAnchor[MaxEmitters];
         private readonly WingtipRibbonEmitter[] emitters = new WingtipRibbonEmitter[MaxEmitters];
         private readonly float[] emitterGraceTimers = new float[MaxEmitters];
+        private readonly WingtipRibbonAnchor[] resolvedAnchors = new WingtipRibbonAnchor[MaxEmitters];
+        private readonly WingtipRibbonAnchor[] rebuildAnchors = new WingtipRibbonAnchor[MaxEmitters];
+        private readonly WingtipRibbonEmitter[] rebuildEmitters = new WingtipRibbonEmitter[MaxEmitters];
+        private readonly float[] rebuildGraceTimers = new float[MaxEmitters];
+        private readonly bool[] matchedEmitters = new bool[MaxEmitters];
+        private readonly StringBuilder anchorDebugBuilder = new StringBuilder(160);
         private int activeSlotCount;
 
         private int cachedPartCount = -1;
         private int lastLiftPartCount;
         private int lastCandidateCount;
+        private int appliedConfigRevision = -1;
+        private string lastCandidateSummary = "none";
         private float anchorRefreshTimer;
         private float sampleDebugTimer;
 
@@ -76,20 +85,6 @@ namespace KerbalFX.AeroFX
             }
         }
 
-        public string AnchorSummary
-        {
-            get
-            {
-                string summary = "";
-                for (int i = 0; i < activeSlotCount; i++)
-                {
-                    if (i > 0) summary += " / ";
-                    summary += anchors[i].PartName;
-                }
-                return summary.Length > 0 ? summary : "none";
-            }
-        }
-
         public bool IsStillValid()
         {
             return vessel != null
@@ -101,14 +96,17 @@ namespace KerbalFX.AeroFX
                 && vessel.mainBody.atmosphere;
         }
 
-        public void TryRebuild()
+        public void TryRebuild(float refreshElapsed)
         {
             if (!IsStillValid())
                 return;
 
-            anchorRefreshTimer -= 1.0f;
+            anchorRefreshTimer -= refreshElapsed;
             int currentPartCount = vessel.parts != null ? vessel.parts.Count : 0;
-            if (currentPartCount != cachedPartCount || anchorRefreshTimer <= 0f || !HasAnyEmitters)
+            if (currentPartCount != cachedPartCount
+                || anchorRefreshTimer <= 0f
+                || !HasAnyEmitters
+                || appliedConfigRevision != AeroFxConfig.Revision)
                 RebuildAnchors(forceLog: false);
         }
 
@@ -121,7 +119,7 @@ namespace KerbalFX.AeroFX
             }
 
             AeroRibbonSample sample;
-            if (!TryBuildSample(out sample))
+            if (!TryBuildSample(dt, out sample))
             {
                 StopAll();
                 return;
@@ -159,41 +157,46 @@ namespace KerbalFX.AeroFX
         {
             anchorRefreshTimer = AeroFxRuntimeConfig.AnchorRefreshInterval;
             cachedPartCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
+            appliedConfigRevision = AeroFxConfig.Revision;
+            int maxRibbonCount = Mathf.Clamp(AeroFxConfig.MaxRibbonCount, 2, MaxEmitters);
 
-            WingtipRibbonAnchor[] newAnchors = new WingtipRibbonAnchor[MaxEmitters];
             int newCount = AeroTrailAnchors.TryResolveAll(
                 vessel,
-                newAnchors,
-                MaxEmitters,
+                resolvedAnchors,
+                maxRibbonCount,
                 out lastLiftPartCount,
-                out lastCandidateCount);
+                out lastCandidateCount,
+                out lastCandidateSummary);
 
-            bool[] oldMatched = new bool[MaxEmitters];
-            WingtipRibbonAnchor[] resultAnchors = new WingtipRibbonAnchor[MaxEmitters];
-            WingtipRibbonEmitter[] resultEmitters = new WingtipRibbonEmitter[MaxEmitters];
-            float[] resultGrace = new float[MaxEmitters];
+            for (int i = 0; i < MaxEmitters; i++)
+            {
+                matchedEmitters[i] = false;
+                rebuildAnchors[i] = default(WingtipRibbonAnchor);
+                rebuildEmitters[i] = null;
+                rebuildGraceTimers[i] = 0f;
+            }
 
             for (int i = 0; i < newCount; i++)
             {
-                int existingIdx = FindExistingEmitterForPart(newAnchors[i].Part, oldMatched);
+                int existingIdx = FindExistingEmitterForPart(resolvedAnchors[i].Part, matchedEmitters);
                 if (existingIdx >= 0)
                 {
-                    oldMatched[existingIdx] = true;
+                    matchedEmitters[existingIdx] = true;
 
-                    if (ShouldAdoptNewAnchor(anchors[existingIdx], newAnchors[i]))
-                        resultAnchors[i] = newAnchors[i];
+                    if (ShouldAdoptNewAnchor(anchors[existingIdx], resolvedAnchors[i]))
+                        rebuildAnchors[i] = resolvedAnchors[i];
                     else
-                        resultAnchors[i] = anchors[existingIdx];
+                        rebuildAnchors[i] = anchors[existingIdx];
 
-                    resultEmitters[i] = emitters[existingIdx];
-                    resultGrace[i] = 0f;
+                    rebuildEmitters[i] = emitters[existingIdx];
+                    rebuildGraceTimers[i] = 0f;
                 }
                 else
                 {
-                    resultAnchors[i] = newAnchors[i];
-                    string label = newAnchors[i].SideSign >= 0 ? "R" + i : "L" + i;
-                    resultEmitters[i] = new WingtipRibbonEmitter(newAnchors[i].Part, label);
-                    resultGrace[i] = 0f;
+                    rebuildAnchors[i] = resolvedAnchors[i];
+                    string label = resolvedAnchors[i].SideSign >= 0 ? "R" + i : "L" + i;
+                    rebuildEmitters[i] = new WingtipRibbonEmitter(resolvedAnchors[i].Part, label);
+                    rebuildGraceTimers[i] = 0f;
                 }
             }
 
@@ -201,19 +204,19 @@ namespace KerbalFX.AeroFX
 
             for (int j = 0; j < activeSlotCount; j++)
             {
-                if (oldMatched[j] || emitters[j] == null)
+                if (matchedEmitters[j] || emitters[j] == null)
                     continue;
 
                 bool partStillExists = IsPartInVessel(emitters[j], vessel);
-                if (partStillExists && resultCount < MaxEmitters)
+                if (partStillExists && resultCount < maxRibbonCount)
                 {
                     float grace = emitterGraceTimers[j] + AeroFxRuntimeConfig.AnchorRefreshInterval;
                     if (grace < EmitterGraceSeconds)
                     {
-                        resultAnchors[resultCount] = anchors[j];
-                        resultEmitters[resultCount] = emitters[j];
-                        resultGrace[resultCount] = grace;
-                        resultEmitters[resultCount].StopEmission();
+                        rebuildAnchors[resultCount] = anchors[j];
+                        rebuildEmitters[resultCount] = emitters[j];
+                        rebuildGraceTimers[resultCount] = grace;
+                        rebuildEmitters[resultCount].StopEmission();
                         resultCount++;
                         continue;
                     }
@@ -224,22 +227,75 @@ namespace KerbalFX.AeroFX
 
             for (int i = 0; i < MaxEmitters; i++)
             {
-                anchors[i] = i < resultCount ? resultAnchors[i] : default(WingtipRibbonAnchor);
-                emitters[i] = i < resultCount ? resultEmitters[i] : null;
-                emitterGraceTimers[i] = i < resultCount ? resultGrace[i] : 0f;
+                anchors[i] = i < resultCount ? rebuildAnchors[i] : default(WingtipRibbonAnchor);
+                emitters[i] = i < resultCount ? rebuildEmitters[i] : null;
+                emitterGraceTimers[i] = i < resultCount ? rebuildGraceTimers[i] : 0f;
             }
             activeSlotCount = resultCount;
 
-            if ((forceLog || newCount == 0) && AeroFxConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
+            bool shouldLog = vessel == FlightGlobals.ActiveVessel && (forceLog || AeroFxConfig.DebugLogging);
+            if (shouldLog)
             {
-                AeroFxLog.DebugLog(Localizer.Format(
+                string anchorScanMessage = Localizer.Format(
                     AeroFxLoc.LogAnchorScan,
                     vessel.vesselName,
                     lastLiftPartCount,
                     lastCandidateCount,
-                    activeSlotCount > 0 ? anchors[0].PartName : "none",
-                    activeSlotCount > 1 ? anchors[1].PartName : "none"));
+                    maxRibbonCount,
+                    activeSlotCount,
+                    BuildAnchorDebugSummary());
+
+                if (AeroFxConfig.DebugLogging)
+                    AeroFxLog.DebugLog(anchorScanMessage);
+                else
+                    AeroFxLog.Info(anchorScanMessage);
+
+                if (!string.IsNullOrEmpty(lastCandidateSummary))
+                {
+                    string candidateMessage = Localizer.Format(
+                        AeroFxLoc.LogAnchorCandidates,
+                        vessel.vesselName,
+                        lastCandidateSummary);
+
+                    if (AeroFxConfig.DebugLogging)
+                        AeroFxLog.DebugLog(candidateMessage);
+                    else
+                        AeroFxLog.Info(candidateMessage);
+                }
             }
+        }
+
+        private string BuildAnchorDebugSummary()
+        {
+            if (activeSlotCount <= 0)
+            {
+                return "none";
+            }
+
+            anchorDebugBuilder.Length = 0;
+            for (int i = 0; i < activeSlotCount; i++)
+            {
+                if (!anchors[i].IsValid)
+                {
+                    continue;
+                }
+
+                if (anchorDebugBuilder.Length > 0)
+                {
+                    anchorDebugBuilder.Append(" / ");
+                }
+
+                anchorDebugBuilder.Append(anchors[i].SideSign >= 0f ? "R" : "L");
+                anchorDebugBuilder.Append("-");
+                anchorDebugBuilder.Append(anchors[i].RoleName);
+                anchorDebugBuilder.Append(":");
+                anchorDebugBuilder.Append(anchors[i].PartName);
+                anchorDebugBuilder.Append("(");
+                anchorDebugBuilder.Append(anchors[i].Score.ToString("F2", CultureInfo.InvariantCulture));
+                anchorDebugBuilder.Append(")");
+            }
+
+            return anchorDebugBuilder.Length > 0 ? anchorDebugBuilder.ToString() : "none";
         }
 
         private int FindExistingEmitterForPart(Part part, bool[] matched)
@@ -276,7 +332,7 @@ namespace KerbalFX.AeroFX
             return false;
         }
 
-        private bool TryBuildSample(out AeroRibbonSample sample)
+        private bool TryBuildSample(float dt, out AeroRibbonSample sample)
         {
             sample = default(AeroRibbonSample);
             if (vessel == null || vessel.mainBody == null || !vessel.mainBody.atmosphere)
@@ -361,7 +417,7 @@ namespace KerbalFX.AeroFX
 
             if (AeroFxConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
             {
-                sampleDebugTimer -= Time.deltaTime;
+                sampleDebugTimer -= dt;
                 if (sampleDebugTimer <= 0f)
                 {
                     sampleDebugTimer = SampleDebugInterval;

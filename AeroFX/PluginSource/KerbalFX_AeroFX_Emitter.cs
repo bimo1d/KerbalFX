@@ -36,6 +36,7 @@ namespace KerbalFX.AeroFX
         private GradientAlphaKey[] cachedAlphaKeys;
         private Transform bodyTransform;
         private bool isEmitting;
+        private float lastAppliedHeadAlpha = -1f;
 
         private const float DebugLogInterval = 1.2f;
         private const float IntensityOnThreshold = 0.012f;
@@ -96,6 +97,7 @@ namespace KerbalFX.AeroFX
                     hasLastEmitBodyLocalPosition = false;
                     hasSmoothedAirflow = false;
                     isEmitting = false;
+                    lastAppliedHeadAlpha = -1f;
                 }
                 lastSituation = currentSituation;
             }
@@ -113,6 +115,7 @@ namespace KerbalFX.AeroFX
                 hasSmoothedAirflow = false;
                 hasLastEmitBodyLocalPosition = false;
                 isEmitting = false;
+                lastAppliedHeadAlpha = -1f;
             }
 
             float trailTime = Mathf.Lerp(
@@ -125,8 +128,13 @@ namespace KerbalFX.AeroFX
             trailTime *= speedLengthScale * machLengthScale * highSpeedCutoff;
 
             float now = Time.time;
-            while (ribbon.Count > 0 && now - ribbon[0].Time > trailTime)
-                ribbon.RemoveAt(0);
+            int trimCount = 0;
+            while (trimCount < ribbon.Count && now - ribbon[trimCount].Time > trailTime)
+                trimCount++;
+            if (trimCount >= ribbon.Count)
+                ribbon.Clear();
+            else if (trimCount > 0)
+                ribbon.RemoveRange(0, trimCount);
 
             Vector3 anchorPoint = anchor.WorldPoint;
             Vector3 anchorOutward = anchor.Outward;
@@ -141,13 +149,14 @@ namespace KerbalFX.AeroFX
             }
 
             float targetIntensity = Mathf.Clamp01(sample.Activation);
+            if (anchor.Role == WingtipAnchorRole.Control)
+                targetIntensity *= 0.65f;
             float fadeSpeed = targetIntensity > smoothedIntensity
                 ? AeroFxRuntimeConfig.FadeInSpeed
                 : AeroFxRuntimeConfig.FadeOutSpeed;
             smoothedIntensity = Mathf.Lerp(smoothedIntensity, targetIntensity, Mathf.Clamp01(dt * fadeSpeed));
 
-            float clearance = Mathf.Max(0.10f, anchor.Clearance);
-            Vector3 tipOffset = anchorOutward * (clearance + Mathf.Lerp(0.08f, 0.22f, sample.Length01));
+            Vector3 tipOffset = anchorOutward * Mathf.Lerp(0.02f, 0.05f, sample.Length01);
 
             Vector3 currentAirflow = sample.AirflowBack;
             if (!hasSmoothedAirflow)
@@ -180,10 +189,13 @@ namespace KerbalFX.AeroFX
                 AeroFxRuntimeConfig.CurlAmplitudeMax,
                 sample.Curl01);
             float post120AmplitudeFade = Mathf.Lerp(1.00f, 0.74f, post120FrequencyBoost);
+            float highSpeedManeuverBoost = Mathf.InverseLerp(250f, 400f, sample.Speed)
+                * Mathf.InverseLerp(1.10f, 2.50f, sample.LoadFactor);
             float curlDamping = Mathf.Lerp(0.62f, 1.00f, highSpeedMotionFade);
             curlDamping *= Mathf.Lerp(0.92f, 1.28f, lowSpeedMotionBoost);
             curlDamping *= Mathf.Lerp(0.98f, 1.30f, maneuverMotionBoost);
             curlDamping *= post120AmplitudeFade;
+            curlDamping *= Mathf.Lerp(1.00f, 2.80f, highSpeedManeuverBoost);
             Vector3 curlOffset = (sample.UpAxis * (Mathf.Sin(curlPhase) * curlAmount)
                 + anchorOutward * (Mathf.Cos(curlPhase * 0.7f) * curlAmount * 0.6f)) * curlDamping;
 
@@ -209,6 +221,7 @@ namespace KerbalFX.AeroFX
                     hasSmoothedAirflow = false;
                     hasLastEmitBodyLocalPosition = false;
                     isEmitting = false;
+                    lastAppliedHeadAlpha = -1f;
                 }
             }
 
@@ -258,7 +271,11 @@ namespace KerbalFX.AeroFX
                         smoothedIntensity.ToString("F2", CultureInfo.InvariantCulture),
                         sample.Speed.ToString("F1", CultureInfo.InvariantCulture),
                         sample.LoadFactor.ToString("F2", CultureInfo.InvariantCulture),
-                        sample.DynamicPressure.ToString("F1", CultureInfo.InvariantCulture)));
+                        sample.DynamicPressure.ToString("F1", CultureInfo.InvariantCulture)
+                        + " pts=" + ribbon.Count.ToString(CultureInfo.InvariantCulture)
+                        + " ln=" + (line != null && line.enabled
+                            ? line.positionCount.ToString(CultureInfo.InvariantCulture)
+                            : "off")));
                 }
             }
         }
@@ -332,10 +349,14 @@ namespace KerbalFX.AeroFX
             float alphaHead = Mathf.Lerp(0.38f, BaseAlpha, intensity);
             if (cachedGradient != null && cachedAlphaKeys != null && cachedAlphaKeys.Length >= 5)
             {
-                cachedAlphaKeys[3].alpha = alphaHead * 0.92f;
-                cachedAlphaKeys[4].alpha = alphaHead;
-                cachedGradient.SetKeys(cachedGradient.colorKeys, cachedAlphaKeys);
-                line.colorGradient = cachedGradient;
+                if (Mathf.Abs(alphaHead - lastAppliedHeadAlpha) > 0.01f)
+                {
+                    cachedAlphaKeys[3].alpha = alphaHead * 0.92f;
+                    cachedAlphaKeys[4].alpha = alphaHead;
+                    cachedGradient.SetKeys(cachedGradient.colorKeys, cachedAlphaKeys);
+                    line.colorGradient = cachedGradient;
+                    lastAppliedHeadAlpha = alphaHead;
+                }
             }
         }
 
@@ -355,7 +376,6 @@ namespace KerbalFX.AeroFX
             line.startWidth = AeroFxRuntimeConfig.TrailWidthMax;
             line.endWidth = 0f;
 
-            // Width: t=0 oldest (tail), t=1 newest (head)
             line.widthCurve = new AnimationCurve(
                 new Keyframe(0f, 0.00f, 0f, 0.18f),
                 new Keyframe(0.12f, 0.16f, 0.30f, 0.30f),
@@ -365,7 +385,6 @@ namespace KerbalFX.AeroFX
                 new Keyframe(1f, 0.08f, -0.08f, 0f)
             );
 
-            // Alpha: smooth fade on both tail and head ends
             cachedGradient = new Gradient();
             cachedAlphaKeys = new GradientAlphaKey[]
             {
@@ -402,6 +421,7 @@ namespace KerbalFX.AeroFX
 
             appliedUiRevision = AeroFxConfig.Revision;
             appliedRuntimeRevision = AeroFxRuntimeConfig.Revision;
+            lastAppliedHeadAlpha = -1f;
         }
 
         private void BuildSmoothedRenderPath(int baseCount)

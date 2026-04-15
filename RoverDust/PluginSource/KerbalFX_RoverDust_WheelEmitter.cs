@@ -53,7 +53,7 @@ namespace KerbalFX.RoverDust
         private static readonly List<Component> sharedComponentBuffer = new List<Component>(24);
         private static float sharedSceneLightsRefreshAt;
         private static int sharedSceneLightsRefreshFrame = -1;
-        private static Guid sharedSceneLightsActiveVesselId = Guid.Empty;
+        private static Guid sharedSceneLightsVesselId = Guid.Empty;
         private static Light cachedSunLight;
         private static bool sunLightSearched;
 
@@ -401,7 +401,7 @@ namespace KerbalFX.RoverDust
 
         private static float EvaluateCombinedLighting(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
         {
-            RefreshSharedSceneLights();
+            RefreshSharedSceneLights(vessel);
 
             float sunLight = EvaluateSunLighting(vessel, worldPoint, surfaceNormal);
             float artificialLight = EvaluateNearbyArtificialLights(worldPoint, surfaceNormal);
@@ -484,18 +484,17 @@ namespace KerbalFX.RoverDust
             return Mathf.Clamp01(strength / 1.05f);
         }
 
-        private static void RefreshSharedSceneLights()
+        private static void RefreshSharedSceneLights(Vessel vessel)
         {
+            Guid vesselId = vessel != null ? vessel.id : Guid.Empty;
             int frame = Time.frameCount;
-            if (sharedSceneLightsRefreshFrame == frame)
+            if (sharedSceneLightsRefreshFrame == frame && vesselId == sharedSceneLightsVesselId)
                 return;
             sharedSceneLightsRefreshFrame = frame;
 
-            Vessel activeVessel = FlightGlobals.ActiveVessel;
-            Guid activeVesselId = activeVessel != null ? activeVessel.id : Guid.Empty;
-            if (activeVesselId != sharedSceneLightsActiveVesselId)
+            if (vesselId != sharedSceneLightsVesselId)
             {
-                sharedSceneLightsActiveVesselId = activeVesselId;
+                sharedSceneLightsVesselId = vesselId;
                 sharedSceneLightsRefreshAt = 0f;
             }
 
@@ -513,7 +512,7 @@ namespace KerbalFX.RoverDust
             sharedSceneLights.Clear();
 
             CollectSunDirectionalLight();
-            CollectVesselPartLights(activeVessel);
+            CollectVesselPartLights(vessel);
 
             sharedSceneLightsRefreshAt = Time.time + SceneLightsRefreshPeriod;
         }

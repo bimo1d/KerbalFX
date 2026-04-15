@@ -9,7 +9,6 @@ namespace KerbalFX.RoverDust
     internal static class RoverDustLoc
     {
         public const string UiTitle = "#LOC_KerbalFX_RoverDust_UI_Title";
-        public const string UiSection = "#LOC_KerbalFX_UI_Section";
         public const string UiSectionMain = "#LOC_KerbalFX_UI_SectionMain";
 
         public const string UiEnableDust = "#LOC_KerbalFX_RoverDust_UI_EnableDust";
@@ -198,12 +197,7 @@ namespace KerbalFX.RoverDust
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
-            if (string.IsNullOrEmpty(bodyName))
-                return 1f;
-            float m;
-            if (BodyVisibilityMultipliers.TryGetValue(bodyName.Trim(), out m))
-                return Mathf.Clamp(m, 0.30f, 3.00f);
-            return 1f;
+            return KerbalFxVesselUtil.GetBodyVisibilityMultiplier(bodyName, BodyVisibilityMultipliers, 0.30f, 3.00f);
         }
 
         private static void SeedDefaultBodyVisibility()
@@ -241,6 +235,7 @@ namespace KerbalFX.RoverDust
         private readonly Dictionary<Guid, VesselDustController> controllers = new Dictionary<Guid, VesselDustController>();
         private readonly List<VesselDustController> controllerList = new List<VesselDustController>();
         private readonly List<Guid> removeControllerIds = new List<Guid>(32);
+        private readonly Dictionary<Guid, float> invalidControllerTimers = new Dictionary<Guid, float>();
         private bool controllerListDirty = true;
 
         private float controllerRefreshTimer;
@@ -250,12 +245,15 @@ namespace KerbalFX.RoverDust
 
         private const float ControllerRefreshInterval = 1.0f;
         private const float SettingsRefreshInterval = 0.5f;
+        private const float ControllerInvalidGraceSeconds = 4.0f;
         private const float HeartbeatInterval = 2.5f;
 
         private void Start()
         {
             RoverDustConfig.Refresh();
             RoverDustRuntimeConfig.Refresh();
+            RefreshControllers(0f);
+            controllerRefreshTimer = ControllerRefreshInterval;
             RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogBootstrapStart));
         }
 
@@ -298,8 +296,9 @@ namespace KerbalFX.RoverDust
             controllerRefreshTimer -= dt;
             if (controllerRefreshTimer > 0f)
                 return;
+            float refreshElapsed = ControllerRefreshInterval - controllerRefreshTimer;
             controllerRefreshTimer = ControllerRefreshInterval;
-            RefreshControllers();
+            RefreshControllers(Mathf.Max(0f, refreshElapsed));
         }
 
         private void TickControllers(float dt)
@@ -328,13 +327,13 @@ namespace KerbalFX.RoverDust
             RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogHeartbeat, controllers.Count));
         }
 
-        private void RefreshControllers()
+        private void RefreshControllers(float refreshElapsed)
         {
-            RemoveInvalidControllers();
+            RemoveInvalidControllers(refreshElapsed);
             AttachOrRefreshLoadedVessels();
         }
 
-        private void RemoveInvalidControllers()
+        private void RemoveInvalidControllers(float refreshElapsed)
         {
             removeControllerIds.Clear();
             var e = controllers.GetEnumerator();
@@ -342,15 +341,34 @@ namespace KerbalFX.RoverDust
             {
                 if (!e.Current.Value.IsStillValid())
                 {
-                    e.Current.Value.Dispose();
-                    removeControllerIds.Add(e.Current.Key);
+                    float invalidTimer;
+                    invalidControllerTimers.TryGetValue(e.Current.Key, out invalidTimer);
+                    invalidTimer += refreshElapsed;
+                    invalidControllerTimers[e.Current.Key] = invalidTimer;
+
+                    if (invalidTimer >= ControllerInvalidGraceSeconds)
+                    {
+                        e.Current.Value.Dispose();
+                        removeControllerIds.Add(e.Current.Key);
+                    }
+                }
+                else
+                {
+                    invalidControllerTimers.Remove(e.Current.Key);
                 }
             }
             e.Dispose();
             for (int i = 0; i < removeControllerIds.Count; i++)
-                controllers.Remove(removeControllerIds[i]);
+                RemoveController(removeControllerIds[i]);
             if (removeControllerIds.Count > 0)
                 controllerListDirty = true;
+        }
+
+        private void RemoveController(Guid vesselId)
+        {
+            controllers.Remove(vesselId);
+            invalidControllerTimers.Remove(vesselId);
+            controllerListDirty = true;
         }
 
         private void AttachOrRefreshLoadedVessels()
@@ -381,15 +399,14 @@ namespace KerbalFX.RoverDust
                 return;
             }
             controllers.Add(vessel.id, controller);
+            invalidControllerTimers.Remove(vessel.id);
             controllerListDirty = true;
             RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogAttached, controller.EmitterCount, vessel.vesselName));
         }
 
         private static bool IsSupportedVessel(Vessel vessel)
         {
-            if (vessel == null || !vessel.loaded || vessel.packed || vessel.isEVA)
-                return false;
-            return vessel.vesselType != VesselType.Flag && vessel.vesselType != VesselType.Debris;
+            return KerbalFxVesselUtil.IsSupportedFlightVessel(vessel);
         }
 
         private void StopAllEmitters()
@@ -409,6 +426,7 @@ namespace KerbalFX.RoverDust
             controllers.Clear();
             controllerList.Clear();
             controllerListDirty = true;
+            invalidControllerTimers.Clear();
             RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogBootstrapStop));
         }
     }
@@ -444,21 +462,9 @@ namespace KerbalFX.RoverDust
                 RebuildEmitters();
                 return;
             }
-            uint sig = ComputePartSignature(vessel);
+            uint sig = KerbalFxUtil.ComputeVesselPartSignature(vessel);
             if (sig != cachedPartSignature)
                 RebuildEmitters();
-        }
-
-        private static uint ComputePartSignature(Vessel v)
-        {
-            uint hash = 17;
-            for (int i = 0; i < v.parts.Count; i++)
-            {
-                Part p = v.parts[i];
-                if (p != null)
-                    hash = hash * 31 + p.flightID;
-            }
-            return hash;
         }
 
         public void Tick(float dt)
@@ -498,7 +504,7 @@ namespace KerbalFX.RoverDust
         {
             DisposeEmitters();
             cachedPartCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
-            cachedPartSignature = vessel != null ? ComputePartSignature(vessel) : 0u;
+            cachedPartSignature = vessel != null ? KerbalFxUtil.ComputeVesselPartSignature(vessel) : 0u;
             if (vessel == null || vessel.parts == null)
                 return;
 

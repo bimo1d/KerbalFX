@@ -9,14 +9,11 @@ namespace KerbalFX.ImpactPuffs
 {
     internal static class ImpactPuffsLoc
     {
-        public const string UiSection = "#LOC_KerbalFX_UI_Section";
         public const string UiSectionMain = "#LOC_KerbalFX_UI_SectionMain";
         public const string UiTitle = "#LOC_KerbalFX_ImpactPuffs_UI_Title";
 
         public const string UiEnable = "#LOC_KerbalFX_ImpactPuffs_UI_Enable";
         public const string UiEnableTip = "#LOC_KerbalFX_ImpactPuffs_UI_Enable_TT";
-        public const string UiSimplified = "#LOC_KerbalFX_ImpactPuffs_UI_Simplified";
-        public const string UiSimplifiedTip = "#LOC_KerbalFX_ImpactPuffs_UI_Simplified_TT";
         public const string UiLightAware = "#LOC_KerbalFX_ImpactPuffs_UI_LightAware";
         public const string UiLightAwareTip = "#LOC_KerbalFX_ImpactPuffs_UI_LightAware_TT";
         public const string UiDebug = "#LOC_KerbalFX_ImpactPuffs_UI_Debug";
@@ -34,16 +31,12 @@ namespace KerbalFX.ImpactPuffs
         public const string LogVesselScan = "#LOC_KerbalFX_ImpactPuffs_Log_VesselScan";
         public const string LogLaunchsiteSuppression = "#LOC_KerbalFX_ImpactPuffs_Log_LaunchsiteSuppression";
         public const string LogRingShockDebug = "#LOC_KerbalFX_ImpactPuffs_Log_RingShockDebug";
-        public const string LogBurstDebug = "#LOC_KerbalFX_ImpactPuffs_Log_BurstDebug";
     }
 
     public class ImpactPuffsParameters : GameParameters.CustomParameterNode
     {
         [GameParameters.CustomParameterUI(ImpactPuffsLoc.UiEnable, toolTip = ImpactPuffsLoc.UiEnableTip)]
         public bool enableImpactPuffs = true;
-
-        [GameParameters.CustomParameterUI(ImpactPuffsLoc.UiSimplified, toolTip = ImpactPuffsLoc.UiSimplifiedTip)]
-        public bool useSimplifiedEffects;
 
         [GameParameters.CustomParameterUI(ImpactPuffsLoc.UiLightAware, toolTip = ImpactPuffsLoc.UiLightAwareTip)]
         public bool useLightAware = true;
@@ -85,7 +78,6 @@ namespace KerbalFX.ImpactPuffs
     internal static class ImpactPuffsConfig
     {
         public static bool Enabled = true;
-        public static bool UseSimplifiedEffects = false;
         public static bool UseLightAware = true;
         public static bool DebugLogging;
         public static int Revision;
@@ -95,7 +87,6 @@ namespace KerbalFX.ImpactPuffs
         public static void Refresh()
         {
             bool newEnabled = true;
-            bool newUseSimplifiedEffects = false;
             bool newUseLightAware = true;
             bool newDebug = false;
 
@@ -105,7 +96,6 @@ namespace KerbalFX.ImpactPuffs
                 if (p != null)
                 {
                     newEnabled = p.enableImpactPuffs;
-                    newUseSimplifiedEffects = p.useSimplifiedEffects;
                     newUseLightAware = p.useLightAware;
                     newDebug = p.debugLogging;
                 }
@@ -113,12 +103,10 @@ namespace KerbalFX.ImpactPuffs
 
             bool changed = !initialized
                 || newEnabled != Enabled
-                || newUseSimplifiedEffects != UseSimplifiedEffects
                 || newUseLightAware != UseLightAware
                 || newDebug != DebugLogging;
 
             Enabled = newEnabled;
-            UseSimplifiedEffects = newUseSimplifiedEffects;
             UseLightAware = newUseLightAware;
             DebugLogging = newDebug;
 
@@ -129,7 +117,6 @@ namespace KerbalFX.ImpactPuffs
                 ImpactPuffsLog.Info(Localizer.Format(
                     ImpactPuffsLoc.LogSettingsUpdated,
                     Enabled,
-                    UseSimplifiedEffects,
                     UseLightAware,
                     DebugLogging
                 ));
@@ -148,7 +135,7 @@ namespace KerbalFX.ImpactPuffs
         public const float SharedMaxParticlesMultiplier = 1.45f;
         public const float SharedRadiusScaleMultiplier = 1.22f;
         public const float MaxRayDistance = 42f;
-        public const float MinNormalizedThrust = 0.05f;
+        public const float MinNormalizedThrust = 0.005f;
         public const float ShadowLightFactor = 0.28f;
         public const float LateralSpreadMultiplier = 2.40f;
         public const float VerticalLiftMultiplier = 0.88f;
@@ -164,8 +151,8 @@ namespace KerbalFX.ImpactPuffs
         public const float ThrustPowerExponent = 0.60f;
         public const float ThrustPowerMinScale = 0.35f;
         public const float ThrustPowerMaxScale = 3.80f;
-        public const float MaxDistanceAtLowThrust = 6.5f;
-        public const float MaxDistanceAtHighThrust = 30.0f;
+        public const float MaxDistanceAtLowThrust = 10.0f;
+        public const float MaxDistanceAtHighThrust = 28.0f;
         public const float TouchdownMinSpeed = 2.2f;
         public const float TouchdownBurstMultiplier = 3.00f;
 
@@ -244,18 +231,7 @@ namespace KerbalFX.ImpactPuffs
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
-            if (string.IsNullOrEmpty(bodyName))
-            {
-                return 1f;
-            }
-
-            float multiplier;
-            if (BodyVisibilityMultipliers.TryGetValue(bodyName, out multiplier))
-            {
-                return Mathf.Clamp(multiplier, 0.40f, 3.00f);
-            }
-
-            return 1f;
+            return KerbalFxVesselUtil.GetBodyVisibilityMultiplier(bodyName, BodyVisibilityMultipliers, 0.40f, 3.00f);
         }
 
         private static string GetConfigPath()

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using UnityEngine;
 
 namespace KerbalFX
@@ -67,6 +68,13 @@ namespace KerbalFX
             return false;
         }
 
+        public static bool ContainsIgnoreCase(string source, string value)
+        {
+            return !string.IsNullOrEmpty(source)
+                && !string.IsNullOrEmpty(value)
+                && source.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         public static bool ContainsAnyTokenInHierarchy(Transform t, string[] tokens, int maxDepth)
         {
             if (t == null || tokens == null || maxDepth <= 0)
@@ -120,6 +128,89 @@ namespace KerbalFX
                 stamp = File.GetLastWriteTimeUtc(path);
         }
 
+        public static bool ModuleNameMatches(PartModule module, string moduleName)
+        {
+            if (module == null || string.IsNullOrEmpty(moduleName))
+                return false;
+
+            string runtimeName = module.moduleName;
+            if (!string.IsNullOrEmpty(runtimeName)
+                && string.Equals(runtimeName, moduleName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string typeName = module.GetType().Name;
+            return !string.IsNullOrEmpty(typeName)
+                && string.Equals(typeName, moduleName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool PartHasModule(Part part, string moduleName)
+        {
+            if (part == null || part.Modules == null || string.IsNullOrEmpty(moduleName))
+                return false;
+
+            for (int i = 0; i < part.Modules.Count; i++)
+            {
+                if (ModuleNameMatches(part.Modules[i], moduleName))
+                    return true;
+            }
+
+            return false;
+        }
+
+        public static uint ComputeVesselPartSignature(Vessel vessel)
+        {
+            if (vessel == null || vessel.parts == null)
+                return 0u;
+
+            uint hash = 17u;
+            for (int i = 0; i < vessel.parts.Count; i++)
+            {
+                Part part = vessel.parts[i];
+                if (part != null)
+                    hash = hash * 31u + part.flightID;
+            }
+
+            return hash;
+        }
+
+        public static string ReadMemberStringLowerInvariant(object target, string memberName)
+        {
+            if (target == null || string.IsNullOrEmpty(memberName))
+                return string.Empty;
+
+            Type type = target.GetType();
+            if (type == null)
+                return string.Empty;
+
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            try
+            {
+                FieldInfo field = type.GetField(memberName, Flags);
+                if (field != null)
+                {
+                    object fieldValue = field.GetValue(target);
+                    if (fieldValue != null)
+                        return fieldValue.ToString().ToLowerInvariant();
+                }
+
+                PropertyInfo property = type.GetProperty(memberName, Flags);
+                if (property != null)
+                {
+                    object propertyValue = property.GetValue(target, null);
+                    if (propertyValue != null)
+                        return propertyValue.ToString().ToLowerInvariant();
+                }
+            }
+            catch
+            {
+            }
+
+            return string.Empty;
+        }
+
         private static Shader cachedAlphaBlended;
         private static Shader cachedAdditive;
         private static Shader cachedTransparent;
@@ -149,6 +240,37 @@ namespace KerbalFX
             if (!shadersCached)
                 FindParticleShader();
             return cachedTransparent != null ? cachedTransparent : cachedAlphaBlended;
+        }
+    }
+
+    internal static class KerbalFxVesselUtil
+    {
+        public static bool IsSupportedFlightVessel(Vessel vessel)
+        {
+            if (vessel == null || !vessel.loaded || vessel.packed || vessel.isEVA)
+                return false;
+            return vessel.vesselType != VesselType.Flag && vessel.vesselType != VesselType.Debris;
+        }
+
+        public static string GetPartName(Part part)
+        {
+            if (part == null)
+                return "none";
+            return part.partInfo != null ? part.partInfo.name : part.name;
+        }
+
+        public static float GetBodyVisibilityMultiplier(
+            string bodyName,
+            Dictionary<string, float> multipliers,
+            float min,
+            float max)
+        {
+            if (string.IsNullOrEmpty(bodyName) || multipliers == null)
+                return 1f;
+            float m;
+            if (multipliers.TryGetValue(bodyName.Trim(), out m))
+                return Mathf.Clamp(m, min, max);
+            return 1f;
         }
     }
 

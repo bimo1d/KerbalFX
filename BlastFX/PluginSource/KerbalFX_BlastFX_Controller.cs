@@ -39,6 +39,14 @@ namespace KerbalFX.BlastFX
             public double EarliestCleanupUt;
         }
 
+        private static readonly Dictionary<string, bool> decouplerModuleCache =
+            new Dictionary<string, bool>(64, StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, bool> tokenMatchCache =
+            new Dictionary<string, bool>(128, StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, bool> stockSeparatorCache =
+            new Dictionary<string, bool>(64, StringComparer.OrdinalIgnoreCase);
+        private static int partTargetCacheRevision = -1;
+
         private readonly Dictionary<uint, State> byPart = new Dictionary<uint, State>(128);
         private readonly Dictionary<uint, double> suppressedFxUntilByPart = new Dictionary<uint, double>(64);
         private readonly Dictionary<uint, HiddenRingState> hiddenRings = new Dictionary<uint, HiddenRingState>(32);
@@ -515,21 +523,44 @@ namespace KerbalFX.BlastFX
 
         private static bool HasDecouplerModule(Part p)
         {
+            if (p == null || p.Modules == null)
+            {
+                return false;
+            }
+
+            string cacheKey = p != null && p.partInfo != null ? p.partInfo.name : (p != null ? p.name : string.Empty);
+            bool cached;
+            if (!string.IsNullOrEmpty(cacheKey) && decouplerModuleCache.TryGetValue(cacheKey, out cached))
+            {
+                return cached;
+            }
+
+            cached = false;
             for (int i = 0; i < p.Modules.Count; i++)
             {
                 PartModule m = p.Modules[i];
                 if (m == null) continue;
                 string tn = m.GetType().Name;
-                if (!string.IsNullOrEmpty(tn) && (tn.IndexOf("Decouple", StringComparison.OrdinalIgnoreCase) >= 0 || tn.IndexOf("Decoupler", StringComparison.OrdinalIgnoreCase) >= 0))
+                if (!string.IsNullOrEmpty(tn)
+                    && (KerbalFxUtil.ContainsIgnoreCase(tn, "Decouple")
+                        || KerbalFxUtil.ContainsIgnoreCase(tn, "Decoupler")))
                 {
-                    return true;
+                    cached = true;
+                    break;
                 }
             }
-            return false;
+
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                decouplerModuleCache[cacheKey] = cached;
+            }
+
+            return cached;
         }
 
         private static bool MatchesTargetToken(Part p)
         {
+            EnsurePartTargetCachesCurrent();
             string target = BlastFxRuntimeConfig.TargetPrefix;
             if (string.IsNullOrEmpty(target) || target.Trim().Length == 0)
             {
@@ -538,6 +569,13 @@ namespace KerbalFX.BlastFX
 
             string name = p.partInfo != null ? p.partInfo.name : string.Empty;
             string rawTitle = p.partInfo != null ? p.partInfo.title : string.Empty;
+            string cacheKey = name + "|" + rawTitle;
+            bool cached;
+            if (tokenMatchCache.TryGetValue(cacheKey, out cached))
+            {
+                return cached;
+            }
+
             string localizedTitle = null;
             bool hasLocalizedKey = !string.IsNullOrEmpty(rawTitle) && rawTitle.StartsWith("#", StringComparison.Ordinal);
 
@@ -546,8 +584,9 @@ namespace KerbalFX.BlastFX
             {
                 string token = tokens[i];
                 if (string.IsNullOrEmpty(token)) continue;
-                if (ContainsIgnoreCase(name, token) || ContainsIgnoreCase(rawTitle, token))
+                if (KerbalFxUtil.ContainsIgnoreCase(name, token) || KerbalFxUtil.ContainsIgnoreCase(rawTitle, token))
                 {
+                    tokenMatchCache[cacheKey] = true;
                     return true;
                 }
 
@@ -561,17 +600,20 @@ namespace KerbalFX.BlastFX
                     localizedTitle = Localizer.Format(rawTitle);
                 }
 
-                if (ContainsIgnoreCase(localizedTitle, token))
+                if (KerbalFxUtil.ContainsIgnoreCase(localizedTitle, token))
                 {
+                    tokenMatchCache[cacheKey] = true;
                     return true;
                 }
             }
 
+            tokenMatchCache[cacheKey] = false;
             return false;
         }
 
         private static bool IsLikelyStockTsSeparator(Part p)
         {
+            EnsurePartTargetCachesCurrent();
             string cfgToken = BlastFxRuntimeConfig.TargetPrefix;
             if (string.IsNullOrWhiteSpace(cfgToken) || cfgToken.IndexOf("TS", StringComparison.OrdinalIgnoreCase) < 0)
             {
@@ -584,12 +626,16 @@ namespace KerbalFX.BlastFX
                 return false;
             }
 
-            if (name.StartsWith("Separator_", StringComparison.OrdinalIgnoreCase))
+            bool cached;
+            if (stockSeparatorCache.TryGetValue(name, out cached))
             {
-                return true;
+                return cached;
             }
 
-            return name.IndexOf("restock-separator-", StringComparison.OrdinalIgnoreCase) >= 0;
+            cached = name.StartsWith("Separator_", StringComparison.OrdinalIgnoreCase)
+                || name.IndexOf("restock-separator-", StringComparison.OrdinalIgnoreCase) >= 0;
+            stockSeparatorCache[name] = cached;
+            return cached;
         }
 
         private static bool HasJettisonNeighbor(Part part)
@@ -599,7 +645,7 @@ namespace KerbalFX.BlastFX
                 return false;
             }
 
-            if (PartHasModule(part.parent, "ModuleJettison"))
+            if (KerbalFxUtil.PartHasModule(part.parent, "ModuleJettison"))
             {
                 return true;
             }
@@ -611,7 +657,7 @@ namespace KerbalFX.BlastFX
 
             for (int i = 0; i < part.children.Count; i++)
             {
-                if (PartHasModule(part.children[i], "ModuleJettison"))
+                if (KerbalFxUtil.PartHasModule(part.children[i], "ModuleJettison"))
                 {
                     return true;
                 }
@@ -620,42 +666,16 @@ namespace KerbalFX.BlastFX
             return false;
         }
 
-        private static bool PartHasModule(Part part, string moduleName)
+        private static void EnsurePartTargetCachesCurrent()
         {
-            if (part == null || part.Modules == null || string.IsNullOrEmpty(moduleName))
+            if (partTargetCacheRevision == BlastFxRuntimeConfig.Revision)
             {
-                return false;
+                return;
             }
 
-            for (int i = 0; i < part.Modules.Count; i++)
-            {
-                PartModule module = part.Modules[i];
-                if (module == null)
-                {
-                    continue;
-                }
-
-                string runtimeName = module.moduleName;
-                if (!string.IsNullOrEmpty(runtimeName) && string.Equals(runtimeName, moduleName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-
-                string typeName = module.GetType().Name;
-                if (!string.IsNullOrEmpty(typeName) && string.Equals(typeName, moduleName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool ContainsIgnoreCase(string source, string value)
-        {
-            return !string.IsNullOrEmpty(source)
-                && !string.IsNullOrEmpty(value)
-                && source.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
+            tokenMatchCache.Clear();
+            stockSeparatorCache.Clear();
+            partTargetCacheRevision = BlastFxRuntimeConfig.Revision;
         }
 
         private bool ShouldSkipDespawnToPreserveShroud(Part ringPart)

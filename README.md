@@ -21,7 +21,7 @@ Engine-ground interaction and touchdown effects.
 
 - Engine plume-ground puffs near terrain.
 - Touchdown burst on harder landings.
-- Non-simplified and simplified modes.
+- Volumetric plume-ground puffs for launch and landing. Works best with single-engine vessels.
 - Light-aware behavior and per-body tuning through config.
 - Compatible approach with Waterfall.
 

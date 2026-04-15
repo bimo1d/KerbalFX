@@ -9,11 +9,12 @@ namespace KerbalFX.AeroFX
 {
     internal static class AeroFxLoc
     {
-        public const string UiSection = "#LOC_KerbalFX_UI_Section";
         public const string UiSectionExtras = "#LOC_KerbalFX_UI_SectionExtras";
         public const string UiTitle = "#LOC_KerbalFX_AeroFX_UI_Title";
         public const string UiEnable = "#LOC_KerbalFX_AeroFX_UI_Enable";
         public const string UiEnableTip = "#LOC_KerbalFX_AeroFX_UI_Enable_TT";
+        public const string UiRibbonCap = "#LOC_KerbalFX_AeroFX_UI_RibbonCap";
+        public const string UiRibbonCapTip = "#LOC_KerbalFX_AeroFX_UI_RibbonCap_TT";
         public const string UiDebug = "#LOC_KerbalFX_AeroFX_UI_Debug";
         public const string UiDebugTip = "#LOC_KerbalFX_AeroFX_UI_Debug_TT";
 
@@ -24,15 +25,31 @@ namespace KerbalFX.AeroFX
         public const string LogAttached = "#LOC_KerbalFX_AeroFX_Log_Attached";
         public const string LogVesselScan = "#LOC_KerbalFX_AeroFX_Log_VesselScan";
         public const string LogAnchorScan = "#LOC_KerbalFX_AeroFX_Log_AnchorScan";
+        public const string LogAnchorCandidates = "#LOC_KerbalFX_AeroFX_Log_AnchorCandidates";
         public const string LogEmitter = "#LOC_KerbalFX_AeroFX_Log_Emitter";
         public const string LogConfig = "#LOC_KerbalFX_AeroFX_Log_Config";
         public const string LogHotReloadFailed = "#LOC_KerbalFX_AeroFX_Log_HotReloadFailed";
+        public const string LogCenterResult = "#LOC_KerbalFX_AeroFX_Log_CenterResult";
+        public const string LogCenterNone = "#LOC_KerbalFX_AeroFX_Log_CenterNone";
+        public const string LogSecondaryResult = "#LOC_KerbalFX_AeroFX_Log_SecondaryResult";
+        public const string LogSecondaryNone = "#LOC_KerbalFX_AeroFX_Log_SecondaryNone";
+        public const string LogTailScan = "#LOC_KerbalFX_AeroFX_Log_TailScan";
     }
 
     public class AeroFxParameters : GameParameters.CustomParameterNode
     {
         [GameParameters.CustomParameterUI(AeroFxLoc.UiEnable, toolTip = AeroFxLoc.UiEnableTip)]
         public bool enableAeroFx = true;
+
+        [GameParameters.CustomIntParameterUI(
+            AeroFxLoc.UiRibbonCap,
+            toolTip = AeroFxLoc.UiRibbonCapTip,
+            minValue = 2,
+            maxValue = 6,
+            stepSize = 1,
+            displayFormat = "N0"
+        )]
+        public int maxRibbonCount = 4;
 
         [GameParameters.CustomParameterUI(AeroFxLoc.UiDebug, toolTip = AeroFxLoc.UiDebugTip)]
         public bool debugLogging = false;
@@ -48,6 +65,7 @@ namespace KerbalFX.AeroFX
     internal static class AeroFxConfig
     {
         public static bool Enabled = true;
+        public static int MaxRibbonCount = 4;
         public static bool DebugLogging;
         public static int Revision;
 
@@ -56,6 +74,7 @@ namespace KerbalFX.AeroFX
         public static void Refresh()
         {
             bool newEnabled = true;
+            int newMaxRibbonCount = 4;
             bool newDebug = false;
 
             if (HighLogic.CurrentGame != null && HighLogic.CurrentGame.Parameters != null)
@@ -64,15 +83,18 @@ namespace KerbalFX.AeroFX
                 if (p != null)
                 {
                     newEnabled = p.enableAeroFx;
+                    newMaxRibbonCount = Mathf.Clamp(p.maxRibbonCount, 2, 6);
                     newDebug = p.debugLogging;
                 }
             }
 
             bool changed = !initialized
                 || newEnabled != Enabled
+                || newMaxRibbonCount != MaxRibbonCount
                 || newDebug != DebugLogging;
 
             Enabled = newEnabled;
+            MaxRibbonCount = newMaxRibbonCount;
             DebugLogging = newDebug;
 
             if (changed)
@@ -82,6 +104,7 @@ namespace KerbalFX.AeroFX
                 AeroFxLog.Info(Localizer.Format(
                     AeroFxLoc.LogSettingsUpdated,
                     Enabled,
+                    MaxRibbonCount,
                     DebugLogging));
             }
         }
@@ -229,6 +252,8 @@ namespace KerbalFX.AeroFX
         {
             AeroFxConfig.Refresh();
             AeroFxRuntimeConfig.Refresh();
+            RefreshControllers(0f);
+            controllerRefreshTimer = ControllerRefreshInterval;
             AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogBootstrapStart));
         }
 
@@ -273,8 +298,9 @@ namespace KerbalFX.AeroFX
             if (controllerRefreshTimer > 0f)
                 return;
 
+            float refreshElapsed = ControllerRefreshInterval - controllerRefreshTimer;
             controllerRefreshTimer = ControllerRefreshInterval;
-            RefreshControllers();
+            RefreshControllers(Mathf.Max(0f, refreshElapsed));
         }
 
         private void TickControllers(float dt)
@@ -314,13 +340,13 @@ namespace KerbalFX.AeroFX
             e.Dispose();
         }
 
-        private void RefreshControllers()
+        private void RefreshControllers(float refreshElapsed)
         {
-            RemoveInvalidControllers();
-            AttachOrRefreshLoadedVessels();
+            RemoveInvalidControllers(refreshElapsed);
+            AttachOrRefreshLoadedVessels(refreshElapsed);
         }
 
-        private void RemoveInvalidControllers()
+        private void RemoveInvalidControllers(float refreshElapsed)
         {
             removeControllerIds.Clear();
 
@@ -331,7 +357,7 @@ namespace KerbalFX.AeroFX
                 {
                     float invalidTimer;
                     invalidControllerTimers.TryGetValue(e.Current.Key, out invalidTimer);
-                    invalidTimer += ControllerRefreshInterval;
+                    invalidTimer += refreshElapsed;
                     invalidControllerTimers[e.Current.Key] = invalidTimer;
 
                     if (invalidTimer >= ControllerInvalidGraceSeconds)
@@ -358,7 +384,7 @@ namespace KerbalFX.AeroFX
             controllerListDirty = true;
         }
 
-        private void AttachOrRefreshLoadedVessels()
+        private void AttachOrRefreshLoadedVessels(float refreshElapsed)
         {
             List<Vessel> loaded = FlightGlobals.VesselsLoaded;
             if (loaded == null)
@@ -373,7 +399,7 @@ namespace KerbalFX.AeroFX
                 VesselAeroController controller;
                 if (controllers.TryGetValue(vessel.id, out controller))
                 {
-                    controller.TryRebuild();
+                    controller.TryRebuild(refreshElapsed);
                     continue;
                 }
 
@@ -401,13 +427,9 @@ namespace KerbalFX.AeroFX
 
         private static bool IsSupportedVessel(Vessel vessel)
         {
-            if (vessel == null || !vessel.loaded || vessel.packed || vessel.isEVA)
-                return false;
-
-            if (vessel.vesselType == VesselType.Flag || vessel.vesselType == VesselType.Debris)
-                return false;
-
-            return vessel.mainBody != null && vessel.mainBody.atmosphere;
+            return KerbalFxVesselUtil.IsSupportedFlightVessel(vessel)
+                && vessel.mainBody != null
+                && vessel.mainBody.atmosphere;
         }
 
         private void OnDestroy()

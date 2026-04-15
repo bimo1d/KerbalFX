@@ -23,7 +23,6 @@ namespace KerbalFX.ImpactPuffs
         private float debugTimer;
         private float suppressionLogTimer;
         private float groundDebugLogTimer;
-        private float dynamicSwayTime;
         private float lastCenteredness;
         private Vector3 smoothedTangent;
         private Vector3 smoothedNormal;
@@ -40,11 +39,12 @@ namespace KerbalFX.ImpactPuffs
         private float cachedBodyVisibility = 1f;
 
         private const float BaseAlpha = 0.60f;
-        private const float StartupRampDuration = 1.65f;
+        private const float StartupRampDuration = 0.25f;
         private const float IgnitionPrimeDuration = 1.20f;
         private const float TerrainGateMultiplier = 1.35f;
-        private const float TerrainGateOffset = 3f;
-        private const float MaxTargetRate = 38000f;
+        private const float TerrainGateOffset = 6f;
+        private const float MaxTargetRateSingle = 18000f;
+        private const float MaxTargetRateMulti = 7500f;
         private const float SunOcclusionRayDistance = 1200f;
         private const float DebugEmitterInterval = 1.2f;
         private const float ColorRefreshInterval = 0.25f;
@@ -231,14 +231,7 @@ namespace KerbalFX.ImpactPuffs
 
             root.transform.position = finalPosition;
 
-            if (ImpactPuffsConfig.UseSimplifiedEffects)
-            {
-                UpdateDynamicGroundFlow(vessel, groundHit.point, stableNormal, exhaustDirection, pressure, qualityNorm, distanceFactor, thrustPowerNorm);
-            }
-            else
-            {
-                UpdateVolumetricFrame(vessel, finalPosition, stableNormal, outwardDirForCoreClamp, exhaustDirection, pressure, dt);
-            }
+            UpdateVolumetricFrame(vessel, finalPosition, stableNormal, outwardDirForCoreClamp, exhaustDirection, pressure, dt);
 
             colorRefreshTimer -= dt;
             if (colorRefreshTimer <= 0f)
@@ -248,32 +241,21 @@ namespace KerbalFX.ImpactPuffs
                 ApplyCurrentStartColor();
             }
 
-            if (ImpactPuffsConfig.UseSimplifiedEffects)
+            SetTargetRate(0f, dt);
+            if (volumetricField != null)
             {
-                SetTargetRate(targetRate, dt);
-                if (volumetricField != null)
-                {
-                    volumetricField.StopSoft(dt);
-                }
-            }
-            else
-            {
-                SetTargetRate(0f, dt);
-                if (volumetricField != null)
-                {
-                    volumetricField.Update(
-                        root.transform.position,
-                        root.transform.rotation,
-                        targetRate,
-                        pressure,
-                        qualityNorm,
-                        currentColor,
-                        cachedLightFactor,
-                        lastCenteredness,
-                        engineClusterCount,
-                        dt
-                    );
-                }
+                volumetricField.Update(
+                    root.transform.position,
+                    root.transform.rotation,
+                    targetRate,
+                    pressure,
+                    qualityNorm,
+                    currentColor,
+                    cachedLightFactor,
+                    lastCenteredness,
+                    engineClusterCount,
+                    dt
+                );
             }
 
             LogEmitterDebug(
@@ -281,7 +263,7 @@ namespace KerbalFX.ImpactPuffs
                 dt,
                 normalizedThrust,
                 groundHit.distance,
-                ImpactPuffsConfig.UseSimplifiedEffects ? smoothedRate : targetRate,
+                targetRate,
                 pressure,
                 alignment,
                 exhaustToBodyDown,
@@ -349,7 +331,7 @@ namespace KerbalFX.ImpactPuffs
                 normalizedThrust = Mathf.Max(normalizedThrust, ignitionAssist);
             }
 
-            if (normalizedThrust < ImpactPuffsRuntimeConfig.MinNormalizedThrust)
+            if (normalizedThrust < 0.005f)
             {
                 StopAllEmission(dt, false);
                 return false;
@@ -388,10 +370,7 @@ namespace KerbalFX.ImpactPuffs
             maxEffectiveDistance = Mathf.Clamp(maxEffectiveDistance, 2f, ImpactPuffsRuntimeConfig.MaxRayDistance);
 
             terrainHeight = GetSafeTerrainHeightAgl(vessel);
-            float clusterGateBoost = engineClusterCount > 1
-                ? Mathf.Lerp(1.0f, 1.8f, Mathf.InverseLerp(2, 6, engineClusterCount))
-                : 1.0f;
-            float terrainGate = maxEffectiveDistance * TerrainGateMultiplier * clusterGateBoost + TerrainGateOffset;
+            float terrainGate = maxEffectiveDistance * TerrainGateMultiplier + TerrainGateOffset;
             if (terrainHeight >= 0f && terrainHeight > terrainGate)
             {
                 LogGroundProbe(vessel, dt, "terrain-gate", groundHit, false, maxEffectiveDistance, terrainHeight, exhaustToBodyDown, alignment, rawHitCount, rigidbodySkipped, partSkipped, normalSkipped);
@@ -462,7 +441,7 @@ namespace KerbalFX.ImpactPuffs
             float rawDistanceFactor = Mathf.Clamp01(1f - (groundHit.distance / maxEffectiveDistance));
             distanceFactor = rawDistanceFactor * rawDistanceFactor * rawDistanceFactor;
 
-            if (distanceFactor <= 0.01f)
+            if (distanceFactor <= 0.04f)
             {
                 LogGroundProbe(vessel, dt, "distance-factor", groundHit, true, maxEffectiveDistance, terrainHeight, exhaustToBodyDown, alignment, rawHitCount, rigidbodySkipped, partSkipped, normalSkipped);
                 LoseGroundContact(dt, false);
@@ -503,7 +482,7 @@ namespace KerbalFX.ImpactPuffs
 
             float baseRate = (1320f + 14800f * pressure * pressure) * Mathf.Lerp(0.42f, 1.36f, distanceFactor);
             float engineClusterScale = ComputeEngineClusterScale(engineClusterCount);
-            float modeDensityScale = ImpactPuffsConfig.UseSimplifiedEffects ? 1.00f : 1.10f;
+            float modeDensityScale = 1.10f;
 
             float targetRate = baseRate
                 * qualityRateScale
@@ -515,23 +494,19 @@ namespace KerbalFX.ImpactPuffs
                 * modeDensityScale;
 
             targetRate *= 1.42f;
-            return Mathf.Clamp(targetRate, 0f, MaxTargetRate);
+            float rateCap = engineClusterCount > 1 ? MaxTargetRateMulti : MaxTargetRateSingle;
+            return Mathf.Clamp(targetRate, 0f, rateCap);
         }
 
         private float ApplyLightAwarenessRate(Vessel vessel, RaycastHit groundHit, float normalizedThrust, float targetRate)
         {
             if (ImpactPuffsConfig.UseLightAware)
             {
-                cachedLightFactor = ImpactPuffsConfig.UseSimplifiedEffects
-                    ? EvaluateEngineAwareLightFactor(vessel, groundHit.point, groundHit.normal, normalizedThrust)
-                    : EvaluateVolumetricLightFactor(vessel, groundHit.point, groundHit.normal, normalizedThrust);
+                cachedLightFactor = EvaluateVolumetricLightFactor(vessel, groundHit.point, groundHit.normal, normalizedThrust);
 
-                if (!ImpactPuffsConfig.UseSimplifiedEffects)
-                {
-                    float volumetricLightRate = Mathf.Pow(Mathf.Clamp01(cachedLightFactor), 0.65f);
-                    volumetricLightRate = Mathf.Lerp(0.28f, 1f, volumetricLightRate);
-                    targetRate *= volumetricLightRate;
-                }
+                float volumetricLightRate = Mathf.Pow(Mathf.Clamp01(cachedLightFactor), 0.65f);
+                volumetricLightRate = Mathf.Lerp(0.28f, 1f, volumetricLightRate);
+                targetRate *= volumetricLightRate;
             }
             else
             {
@@ -572,15 +547,11 @@ namespace KerbalFX.ImpactPuffs
             {
                 outwardDir.Normalize();
                 outwardDirForCoreClamp = outwardDir;
-                float outwardShift = ImpactPuffsConfig.UseSimplifiedEffects
-                    ? (Mathf.Lerp(0.40f, 1.35f, pressure) * (0.80f + 0.90f * underCenter))
-                    : (Mathf.Lerp(0.08f, 0.42f, pressure) * Mathf.Lerp(0.30f, 0.92f, underCenter));
+                float outwardShift = Mathf.Lerp(0.08f, 0.42f, pressure) * Mathf.Lerp(0.30f, 0.92f, underCenter);
                 if (engineClusterCount > 1)
                 {
                     float clusterNorm = Mathf.InverseLerp(2f, 6f, engineClusterCount);
-                    outwardShift *= ImpactPuffsConfig.UseSimplifiedEffects
-                        ? Mathf.Lerp(1.55f, 2.15f, clusterNorm)
-                        : Mathf.Lerp(3.20f, 4.40f, clusterNorm);
+                    outwardShift *= Mathf.Lerp(1.10f, 1.50f, clusterNorm);
                 }
                 lateralOffset = outwardDir * outwardShift;
             }
@@ -588,15 +559,15 @@ namespace KerbalFX.ImpactPuffs
             Vector3 finalPosition = groundHit.point + stableNormal * surfaceOffset + lateralOffset;
             Vector3 finalPlane = Vector3.ProjectOnPlane(finalPosition - vessel.CoM, stableNormal);
             float finalRadius = finalPlane.magnitude;
-            float minCoreRadius = ImpactPuffsConfig.UseSimplifiedEffects
-                ? Mathf.Lerp(1.10f, 2.85f, pressure)
-                : Mathf.Lerp(0.55f, 1.95f, pressure);
+            float minCoreRadius = Mathf.Lerp(0.55f, 1.95f, pressure);
             if (engineClusterCount > 1)
             {
                 float clusterNorm = Mathf.InverseLerp(2f, 6f, engineClusterCount);
-                minCoreRadius *= ImpactPuffsConfig.UseSimplifiedEffects
-                    ? Mathf.Lerp(1.25f, 1.70f, clusterNorm)
-                    : Mathf.Lerp(2.10f, 3.00f, clusterNorm);
+                minCoreRadius *= Mathf.Lerp(1.00f, 1.40f, clusterNorm);
+            }
+            else
+            {
+                minCoreRadius *= 0.30f;
             }
             if (finalRadius < minCoreRadius)
             {
@@ -663,7 +634,7 @@ namespace KerbalFX.ImpactPuffs
                 + " terrainH=" + terrainHeight.ToString("F1", CultureInfo.InvariantCulture)
                 + " thrust=" + currentThrust.ToString("F0", CultureInfo.InvariantCulture)
                 + " cluster=" + engineClusterCount
-                + " mode=" + (ImpactPuffsConfig.UseSimplifiedEffects ? "simplified" : "volumetric")
+                + " mode=volumetric"
             ));
         }
 
@@ -715,7 +686,7 @@ namespace KerbalFX.ImpactPuffs
 
         private void HardResetEmissionState()
         {
-            startupRampTimer = 0f;
+            startupRampTimer = Mathf.Min(startupRampTimer, StartupRampDuration * 0.50f);
             smoothedRate = 0f;
             lastCenteredness = 0f;
             ResetGroundAnchorState(true);
@@ -785,7 +756,7 @@ namespace KerbalFX.ImpactPuffs
                 + " skipPart=" + partSkipped
                 + " skipNormal=" + normalSkipped
                 + " cluster=" + engineClusterCount
-                + " mode=" + (ImpactPuffsConfig.UseSimplifiedEffects ? "simplified" : "volumetric"));
+                + " mode=volumetric");
         }
 
         private void ResetGroundAnchorState(bool snapRootToOrigin)
@@ -897,7 +868,7 @@ namespace KerbalFX.ImpactPuffs
 
             float quality = GetModeQualityScale();
             float qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
-            float volumetricBoost = ImpactPuffsConfig.UseSimplifiedEffects ? 1.00f : 1.30f;
+            float volumetricBoost = 1.30f;
 
             ParticleSystem.MainModule main = particleSystem.main;
             float maxParticles = 2200f
@@ -977,14 +948,7 @@ namespace KerbalFX.ImpactPuffs
 
         private void UpdateVolumetricFrame(Vessel vessel, Vector3 plumePosition, Vector3 surfaceNormal, Vector3 outwardHint, Vector3 exhaustDirection, float pressure, float dt)
         {
-            if (engineClusterCount <= 1)
-            {
-                UpdateVolumetricFrameSingle(vessel, plumePosition, surfaceNormal, outwardHint, exhaustDirection, dt);
-            }
-            else
-            {
-                UpdateVolumetricFrameMulti(vessel, plumePosition, surfaceNormal, outwardHint, exhaustDirection, dt);
-            }
+            UpdateVolumetricFrameSingle(vessel, plumePosition, surfaceNormal, outwardHint, exhaustDirection, dt);
         }
 
         private void UpdateVolumetricFrameSingle(Vessel vessel, Vector3 plumePosition, Vector3 surfaceNormal, Vector3 outwardHint, Vector3 exhaustDirection, float dt)
@@ -1062,157 +1026,6 @@ namespace KerbalFX.ImpactPuffs
             root.transform.rotation = Quaternion.LookRotation(smoothedNormal, awayFromVessel);
         }
 
-        private void UpdateVolumetricFrameMulti(Vessel vessel, Vector3 plumePosition, Vector3 surfaceNormal, Vector3 outwardHint, Vector3 exhaustDirection, float dt)
-        {
-            lastCenteredness = 0f;
-
-            Vector3 tangentForward = Vector3.zero;
-            if (vessel != null)
-            {
-                tangentForward = Vector3.ProjectOnPlane(plumePosition - vessel.CoM, surfaceNormal);
-            }
-
-            if (tangentForward.sqrMagnitude < 0.0001f && outwardHint.sqrMagnitude > 0.0001f)
-            {
-                tangentForward = Vector3.ProjectOnPlane(outwardHint, surfaceNormal);
-            }
-            if (tangentForward.sqrMagnitude < 0.0001f)
-            {
-                tangentForward = Vector3.ProjectOnPlane(exhaustDirection, surfaceNormal);
-            }
-            if (tangentForward.sqrMagnitude < 0.0001f)
-            {
-                tangentForward = Vector3.ProjectOnPlane(part.transform.forward, surfaceNormal);
-            }
-            if (tangentForward.sqrMagnitude < 0.0001f)
-            {
-                tangentForward = Vector3.Cross(surfaceNormal, Vector3.right);
-            }
-
-            tangentForward.Normalize();
-
-            if (smoothedTangent.sqrMagnitude > 0.0001f)
-            {
-                float angleDiff = Vector3.Angle(smoothedTangent, tangentForward);
-                float smoothRate = angleDiff > 5.0f ? 3.0f : 0.3f;
-                smoothedTangent = Vector3.Slerp(smoothedTangent, tangentForward, Mathf.Clamp01(dt * smoothRate));
-            }
-            else
-            {
-                smoothedTangent = tangentForward;
-            }
-            if (smoothedTangent.sqrMagnitude > 0.0001f)
-            {
-                smoothedTangent.Normalize();
-            }
-            tangentForward = smoothedTangent;
-
-            Vector3 tangentRight = Vector3.Cross(surfaceNormal, tangentForward);
-            if (tangentRight.sqrMagnitude < 0.0001f)
-            {
-                tangentRight = Vector3.Cross(surfaceNormal, Vector3.forward);
-            }
-            tangentRight.Normalize();
-
-            Vector3 awayFromVessel = tangentForward;
-            if (awayFromVessel.sqrMagnitude < 0.0001f)
-            {
-                awayFromVessel = tangentRight;
-            }
-            awayFromVessel.Normalize();
-
-            root.transform.position = plumePosition;
-            root.transform.rotation = Quaternion.LookRotation(awayFromVessel, surfaceNormal);
-        }
-
-        private void UpdateDynamicGroundFlow(Vessel vessel, Vector3 groundPoint, Vector3 surfaceNormal, Vector3 exhaustDirection, float pressure, float qualityNorm, float distanceFactor, float thrustPowerNorm)
-        {
-            float volumetricBoost = ImpactPuffsConfig.UseSimplifiedEffects ? 1.00f : 1.28f;
-            Vector3 tangentForward = Vector3.zero;
-            if (vessel != null)
-            {
-                tangentForward = Vector3.ProjectOnPlane(groundPoint - vessel.CoM, surfaceNormal);
-            }
-
-            if (tangentForward.sqrMagnitude < 0.0001f)
-            {
-                tangentForward = Vector3.ProjectOnPlane(exhaustDirection, surfaceNormal);
-            }
-            if (tangentForward.sqrMagnitude < 0.0001f)
-            {
-                tangentForward = Vector3.ProjectOnPlane(part.transform.forward, surfaceNormal);
-            }
-            if (tangentForward.sqrMagnitude < 0.0001f)
-            {
-                tangentForward = Vector3.Cross(surfaceNormal, Vector3.right);
-            }
-
-            tangentForward.Normalize();
-            root.transform.rotation = Quaternion.LookRotation(tangentForward, surfaceNormal);
-
-            dynamicSwayTime += Time.deltaTime * Mathf.Lerp(1.35f, 7.60f, pressure) * ImpactPuffsRuntimeConfig.DynamicSwayMultiplier;
-            float swayA = Mathf.Sin(dynamicSwayTime * 1.75f + part.flightID * 0.013f);
-            float swayB = Mathf.Cos(dynamicSwayTime * 2.30f + part.flightID * 0.017f);
-            float swayC = Mathf.Sin(dynamicSwayTime * 0.78f + part.flightID * 0.051f);
-            float sway = (swayA + swayB + swayC) / 3f;
-
-            float lateral = Mathf.Lerp(2.7f, 14.2f, pressure)
-                * ImpactPuffsRuntimeConfig.LateralSpreadMultiplier
-                * Mathf.Lerp(0.86f, 1.24f, qualityNorm)
-                * Mathf.Lerp(0.82f, 1.35f, thrustPowerNorm)
-                * volumetricBoost;
-            float lift = Mathf.Lerp(0.28f, 1.45f, pressure)
-                * ImpactPuffsRuntimeConfig.VerticalLiftMultiplier
-                * Mathf.Lerp(0.84f, 1.08f, qualityNorm)
-                * volumetricBoost;
-            float ring = Mathf.Lerp(0.64f, 2.52f, pressure)
-                * ImpactPuffsRuntimeConfig.RingExpansionMultiplier
-                * Mathf.Lerp(0.84f, 1.15f, qualityNorm)
-                * Mathf.Lerp(0.72f, 1.22f, distanceFactor)
-                * Mathf.Lerp(0.86f, 1.28f, thrustPowerNorm)
-                * volumetricBoost;
-
-            Vector3 centerOffsetVector = Vector3.ProjectOnPlane(groundPoint - vessel.CoM, surfaceNormal);
-            float centerOffset = centerOffsetVector.magnitude;
-            float directionalBias = Mathf.Clamp01(centerOffset / Mathf.Lerp(0.45f, 1.30f, pressure));
-            lift *= Mathf.Lerp(0.30f, 1f, directionalBias);
-            ring *= Mathf.Lerp(1.75f, 1.00f, directionalBias);
-            lateral *= Mathf.Lerp(1.32f, 1.00f, directionalBias);
-            sway *= Mathf.Lerp(0.32f, 1.00f, directionalBias);
-
-            float swayScale = 1.00f;
-            float swayOffset = sway * lateral * 0.95f * swayScale * directionalBias;
-            float sideJitter = Mathf.Sin(dynamicSwayTime * 1.07f + part.flightID * 0.023f) * lateral * 0.76f * swayScale * Mathf.Lerp(0.45f, 1f, directionalBias);
-
-            ParticleSystem.VelocityOverLifetimeModule velocity = particleSystem.velocityOverLifetime;
-            velocity.enabled = true;
-            velocity.space = ParticleSystemSimulationSpace.Local;
-            velocity.x = new ParticleSystem.MinMaxCurve((-lateral * 0.92f) + swayOffset - sideJitter, (lateral * 0.92f) + swayOffset + sideJitter);
-            float yMin = lift * 0.18f;
-            float yMax = lift * 1.08f;
-            velocity.y = new ParticleSystem.MinMaxCurve(yMin, yMax);
-            float zBias = sideJitter * 0.28f;
-            float zMin = (lateral * 0.08f) + zBias;
-            float zMax = (lateral * 1.34f) + zBias;
-            zMin = Mathf.Max(zMin, lateral * 0.20f);
-            zMax = Mathf.Max(zMax, lateral * 1.62f);
-            velocity.z = new ParticleSystem.MinMaxCurve(zMin, zMax);
-            velocity.radial = new ParticleSystem.MinMaxCurve(ring * 0.72f, ring * 1.28f);
-
-            ParticleSystem.ShapeModule shape = particleSystem.shape;
-            float radius = Mathf.Lerp(0.62f, 2.65f, pressure);
-            radius *= 1.14f;
-            shape.radius = radius * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier * ImpactPuffsRuntimeConfig.SharedRadiusScaleMultiplier;
-            shape.angle = Mathf.Lerp(50f, 80f, pressure);
-
-            ParticleSystem.NoiseModule noise = particleSystem.noise;
-            noise.enabled = true;
-            noise.strength = Mathf.Lerp(0.30f, 2.25f, pressure) * ImpactPuffsRuntimeConfig.TurbulenceMultiplier;
-            noise.frequency = Mathf.Lerp(0.30f, 1.05f, pressure);
-            noise.scrollSpeed = Mathf.Lerp(0.18f, 1.25f, pressure);
-            noise.damping = true;
-        }
-
         private void SetTargetRate(float targetRate, float dt)
         {
             if (targetRate > 0.25f)
@@ -1221,12 +1034,12 @@ namespace KerbalFX.ImpactPuffs
             }
             else
             {
-                startupRampTimer = Mathf.Max(0f, startupRampTimer - Mathf.Max(0f, dt) * 3.0f);
+                startupRampTimer = Mathf.Max(0f, startupRampTimer - Mathf.Max(0f, dt) * 1.8f);
             }
-            float startupFactor = Mathf.Lerp(0.12f, 1f, Mathf.Clamp01(startupRampTimer / StartupRampDuration));
+            float startupFactor = Mathf.Lerp(0.18f, 1f, Mathf.Clamp01(startupRampTimer / StartupRampDuration));
             targetRate *= startupFactor;
 
-            float smoothingSpeed = targetRate > smoothedRate ? 1.65f : 7.50f;
+            float smoothingSpeed = targetRate > smoothedRate ? 4.5f : 7.50f;
             float lerpSpeed = Mathf.Clamp01(dt * smoothingSpeed);
             smoothedRate = Mathf.Lerp(smoothedRate, targetRate, lerpSpeed);
 
@@ -1464,7 +1277,7 @@ namespace KerbalFX.ImpactPuffs
 
         internal static float GetModeQualityScale()
         {
-            return ImpactPuffsConfig.UseSimplifiedEffects ? 1.00f : 1.70f;
+            return 1.70f;
         }
 
         private static float GetNormalizedLiveThrust(ModuleEngines module)
@@ -1621,30 +1434,15 @@ namespace KerbalFX.ImpactPuffs
                 return;
             }
 
-            float volumetricBoost = ImpactPuffsConfig.UseSimplifiedEffects ? 1.00f : 1.15f;
+            float volumetricBoost = 1.15f;
             float baseAlpha = BaseAlpha * 0.68f * volumetricBoost;
-            float lightMin = ImpactPuffsConfig.UseSimplifiedEffects ? 0.18f : 0.26f;
-            float lightMax = ImpactPuffsConfig.UseSimplifiedEffects ? 0.84f : 0.92f;
-            float alpha = baseAlpha * Mathf.Lerp(lightMin, lightMax, Mathf.Clamp01(cachedLightFactor));
+            float alpha = baseAlpha * Mathf.Lerp(0.26f, 0.92f, Mathf.Clamp01(cachedLightFactor));
             alpha *= Mathf.Lerp(0.92f, 1.12f, Mathf.Clamp01((cachedBodyVisibility - 1f) / 0.75f));
-            float alphaCap = 0.60f + (ImpactPuffsConfig.UseSimplifiedEffects ? 0.00f : 0.08f);
+            float alphaCap = 0.68f;
             alpha = Mathf.Clamp(alpha, 0f, alphaCap);
 
             ParticleSystem.MainModule main = particleSystem.main;
             main.startColor = new Color(currentColor.r, currentColor.g, currentColor.b, alpha);
-        }
-
-        private static float EvaluateEngineAwareLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, float normalizedThrust)
-        {
-            if (!ImpactPuffsConfig.UseLightAware)
-            {
-                return 1f;
-            }
-
-            float sunLight = EvaluateSunLighting(vessel, worldPoint, surfaceNormal, false);
-            float thrust01 = Mathf.Clamp01(normalizedThrust);
-            float engineGlow = Mathf.Lerp(0.01f, 0.11f, Mathf.Pow(thrust01, 0.80f));
-            return Mathf.Clamp01(Mathf.Max(sunLight, engineGlow));
         }
 
         private static float EvaluateVolumetricLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, float normalizedThrust)
@@ -1733,7 +1531,7 @@ namespace KerbalFX.ImpactPuffs
             SunOcclusionCacheEntry updatedEntry = new SunOcclusionCacheEntry
             {
                 Occluded = occluded,
-                ValidUntil = now + (ImpactPuffsConfig.UseSimplifiedEffects ? 0.30f : 0.14f),
+                ValidUntil = now + 0.14f,
                 SamplePoint = worldPoint,
                 SunDirection = sunDirection
             };

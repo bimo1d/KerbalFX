@@ -1,3 +1,12 @@
+## 0.6.2
+- **AeroFX** anchor and wingtip-extension fixes with general cleanup.
+- Reworked **Impact Puffs** multi-engine volumetric shaping with petal-style separation, faster startup/restart response, lower thrust activation, and more reliable terrain and touchdown probing. Simplified mode is now deprecated.
+- Consolidated shared core helpers for vessel signatures, module lookup, and common runtime utilities used across modules.
+- Cleaned up **BlastFX** runtime matching and debug plumbing and added caches for repeated separator target checks.
+- Improved **Rover Dust** controller lifecycle handling and made shared scene-light refresh vessel-aware instead of active-vessel-only.
+- Removed `ROADMAP.md`, which had been pushed by mistake.
+- Rebuilt `KerbalFX.Core.dll`.
+
 ## 0.6.1
 - Added new module: **AeroFX**.
 - AeroFX adds atmospheric ribbon condensation trails to suitable wings, control surfaces, and fins.
