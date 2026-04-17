@@ -3,6 +3,7 @@
 **/build_*.rsp
 **/build_*.txt
 *.build.tmp.dll
+.build/
 
 # IDE / project files
 .vs/

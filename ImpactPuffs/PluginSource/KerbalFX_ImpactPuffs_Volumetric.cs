@@ -49,6 +49,7 @@ namespace KerbalFX.ImpactPuffs
             float targetRate,
             float pressure,
             float qualityNorm,
+            float qualityScale,
             Color dustColor,
             float lightFactor,
             float centeredness,
@@ -75,14 +76,15 @@ namespace KerbalFX.ImpactPuffs
             root.transform.position = worldPosition;
 
             float qualityBoost = Mathf.Lerp(1.10f, 1.85f, qualityNorm);
+            float particleScale = Mathf.Clamp(qualityScale, 0.25f, 1.5f);
             float pressureBoost = Mathf.Lerp(0.55f, 1.60f, pressure);
 
             float smoothIn = Mathf.Clamp01(dt * 4.8f);
             float smoothOut = Mathf.Clamp01(dt * 7.2f);
 
-            float coreTarget = Mathf.Clamp(targetRate * 0.58f * qualityBoost * pulse, 0f, 36000f);
-            float shellTarget = Mathf.Clamp(targetRate * 0.44f * qualityBoost * burstGate, 0f, 30000f);
-            float loftTarget = Mathf.Clamp(targetRate * 0.26f * qualityBoost * Mathf.Lerp(pulse, burstGate, 0.5f), 0f, 22000f);
+            float coreTarget = Mathf.Clamp(targetRate * 0.58f * qualityBoost * pulse, 0f, 36000f * particleScale);
+            float shellTarget = Mathf.Clamp(targetRate * 0.44f * qualityBoost * burstGate, 0f, 30000f * particleScale);
+            float loftTarget = Mathf.Clamp(targetRate * 0.26f * qualityBoost * Mathf.Lerp(pulse, burstGate, 0.5f), 0f, 22000f * particleScale);
 
             coreRate = Mathf.Lerp(coreRate, coreTarget, coreTarget > coreRate ? smoothIn : smoothOut);
             shellRate = Mathf.Lerp(shellRate, shellTarget, shellTarget > shellRate ? smoothIn : smoothOut);
@@ -91,9 +93,9 @@ namespace KerbalFX.ImpactPuffs
             float petalBias = (activeEngineCount > 1) ? Mathf.Lerp(0.30f, 0.72f, 1f - centeredness) : 0f;
             float radialScale = (activeEngineCount > 1) ? Mathf.Lerp(0.60f, 0.18f, 1f - centeredness) : 1f;
 
-            UpdateLayerSingle(core, coreRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.30f), 0.86f, 0.34f, 0.36f, pulse, centeredness, petalBias, radialScale);
-            UpdateLayerSingle(shell, shellRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.22f), 1.20f, 0.44f, 0.30f, burstGate, centeredness, petalBias, radialScale);
-            UpdateLayerSingle(loft, loftRate, pressureBoost, density, qualityNorm, lightFactor, Color.Lerp(dustColor, Color.white, 0.38f), 1.34f, 0.60f, 0.20f, pulse * 0.90f, centeredness, petalBias, radialScale);
+            UpdateLayerSingle(core, coreRate, pressureBoost, density, qualityNorm, particleScale, lightFactor, Color.Lerp(dustColor, Color.white, 0.30f), 0.86f, 0.34f, 0.36f, pulse, centeredness, petalBias, radialScale);
+            UpdateLayerSingle(shell, shellRate, pressureBoost, density, qualityNorm, particleScale, lightFactor, Color.Lerp(dustColor, Color.white, 0.22f), 1.20f, 0.44f, 0.30f, burstGate, centeredness, petalBias, radialScale);
+            UpdateLayerSingle(loft, loftRate, pressureBoost, density, qualityNorm, particleScale, lightFactor, Color.Lerp(dustColor, Color.white, 0.38f), 1.34f, 0.60f, 0.20f, pulse * 0.90f, centeredness, petalBias, radialScale);
         }
 
         public void StopSoft(float dt)
@@ -140,6 +142,7 @@ namespace KerbalFX.ImpactPuffs
             float pressureBoost,
             float density,
             float qualityNorm,
+            float particleScale,
             float lightFactor,
             Color color,
             float sizeScale,
@@ -159,7 +162,7 @@ namespace KerbalFX.ImpactPuffs
             ParticleSystem.MainModule main = ps.main;
             main.startLifetime = new ParticleSystem.MinMaxCurve(0.38f * lifeQuality, 1.40f * sizeScale * lifeQuality);
             main.gravityModifier = 0.03f;
-            main.maxParticles = SingleMaxParticles;
+            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(SingleMaxParticles * particleScale, 4000f, 24000f));
 
             float dirSpeed = Mathf.Lerp(0.12f, 0.50f, qualityNorm);
             float petalSpeedBoost = 1f + petalBias * 2.2f;

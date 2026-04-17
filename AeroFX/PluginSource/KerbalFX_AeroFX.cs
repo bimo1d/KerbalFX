@@ -15,6 +15,10 @@ namespace KerbalFX.AeroFX
         public const string UiEnableTip = "#LOC_KerbalFX_AeroFX_UI_Enable_TT";
         public const string UiRibbonCap = "#LOC_KerbalFX_AeroFX_UI_RibbonCap";
         public const string UiRibbonCapTip = "#LOC_KerbalFX_AeroFX_UI_RibbonCap_TT";
+        public const string UiLightAware = "#LOC_KerbalFX_AeroFX_UI_LightAware";
+        public const string UiLightAwareTip = "#LOC_KerbalFX_AeroFX_UI_LightAware_TT";
+        public const string UiManeuverOnly = "#LOC_KerbalFX_AeroFX_UI_ManeuverOnly";
+        public const string UiManeuverOnlyTip = "#LOC_KerbalFX_AeroFX_UI_ManeuverOnly_TT";
         public const string UiDebug = "#LOC_KerbalFX_AeroFX_UI_Debug";
         public const string UiDebugTip = "#LOC_KerbalFX_AeroFX_UI_Debug_TT";
 
@@ -51,6 +55,12 @@ namespace KerbalFX.AeroFX
         )]
         public int maxRibbonCount = 4;
 
+        [GameParameters.CustomParameterUI(AeroFxLoc.UiLightAware, toolTip = AeroFxLoc.UiLightAwareTip)]
+        public bool useLightAware = true;
+
+        [GameParameters.CustomParameterUI(AeroFxLoc.UiManeuverOnly, toolTip = AeroFxLoc.UiManeuverOnlyTip)]
+        public bool maneuverOnly = false;
+
         [GameParameters.CustomParameterUI(AeroFxLoc.UiDebug, toolTip = AeroFxLoc.UiDebugTip)]
         public bool debugLogging = false;
 
@@ -66,6 +76,8 @@ namespace KerbalFX.AeroFX
     {
         public static bool Enabled = true;
         public static int MaxRibbonCount = 4;
+        public static bool UseLightAware = true;
+        public static bool UseManeuverOnly;
         public static bool DebugLogging;
         public static int Revision;
 
@@ -75,6 +87,8 @@ namespace KerbalFX.AeroFX
         {
             bool newEnabled = true;
             int newMaxRibbonCount = 4;
+            bool newUseLightAware = true;
+            bool newUseManeuverOnly = false;
             bool newDebug = false;
 
             if (HighLogic.CurrentGame != null && HighLogic.CurrentGame.Parameters != null)
@@ -84,6 +98,8 @@ namespace KerbalFX.AeroFX
                 {
                     newEnabled = p.enableAeroFx;
                     newMaxRibbonCount = Mathf.Clamp(p.maxRibbonCount, 2, 6);
+                    newUseLightAware = p.useLightAware;
+                    newUseManeuverOnly = p.maneuverOnly;
                     newDebug = p.debugLogging;
                 }
             }
@@ -91,10 +107,14 @@ namespace KerbalFX.AeroFX
             bool changed = !initialized
                 || newEnabled != Enabled
                 || newMaxRibbonCount != MaxRibbonCount
+                || newUseLightAware != UseLightAware
+                || newUseManeuverOnly != UseManeuverOnly
                 || newDebug != DebugLogging;
 
             Enabled = newEnabled;
             MaxRibbonCount = newMaxRibbonCount;
+            UseLightAware = newUseLightAware;
+            UseManeuverOnly = newUseManeuverOnly;
             DebugLogging = newDebug;
 
             if (changed)
@@ -105,6 +125,8 @@ namespace KerbalFX.AeroFX
                     AeroFxLoc.LogSettingsUpdated,
                     Enabled,
                     MaxRibbonCount,
+                    UseLightAware,
+                    UseManeuverOnly,
                     DebugLogging));
             }
         }
@@ -136,85 +158,52 @@ namespace KerbalFX.AeroFX
         public const float SinkBiasMax = 0.08f;
         public const float ActivationFloor = 0.01f;
         public const float FadeInSpeed = 0.55f;
-        public const float FadeOutSpeed = 1.00f;
-        public const float AnchorRefreshInterval = 6.0f;
+        public const float FadeOutSpeed = 0.55f;
+        public const float LightDaylightFloor = 0.82f;
+        public const float LightShadowFloor = 0.08f;
+        public const float AnchorRefreshInterval = 4.0f;
 
-        private static readonly Dictionary<string, float> BodyVisibilityMultipliers =
-            new Dictionary<string, float>(8, StringComparer.OrdinalIgnoreCase);
-        private static DateTime lastConfigWriteUtc = DateTime.MinValue;
+        private static readonly KerbalFxBodyVisibilityProfile bodyProfile =
+            new KerbalFxBodyVisibilityProfile("KERBALFX_AERO_FX", GetConfigPath, SeedDefaultBodyVisibility, 0.20f, 2.50f);
 
         public static void Refresh()
         {
-            SeedDefaultBodyVisibility();
-            if (GameDatabase.Instance != null)
-            {
-                ConfigNode[] nodes = GameDatabase.Instance.GetConfigNodes("KERBALFX_AERO_FX");
-                if (nodes != null)
-                    for (int i = 0; i < nodes.Length; i++)
-                        if (nodes[i] != null)
-                            KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.20f, 2.50f);
-            }
-            KerbalFxUtil.PrimeConfigFileStamp(GetConfigPath(), ref lastConfigWriteUtc);
+            bodyProfile.Refresh();
             Revision++;
             AeroFxLog.Info(Localizer.Format(
                 AeroFxLoc.LogConfig,
                 "GameDatabase",
-                "BodyVisibility=" + BodyVisibilityMultipliers.Count.ToString(CultureInfo.InvariantCulture)));
+                "BodyVisibility=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)));
         }
 
         public static void TryHotReloadFromDisk()
         {
-            if (!KerbalFxUtil.HasConfigFileChanged(GetConfigPath(), ref lastConfigWriteUtc))
+            string failure;
+            if (!bodyProfile.TryHotReloadFromDisk(out failure))
                 return;
 
-            SeedDefaultBodyVisibility();
-            try
-            {
-                string path = GetConfigPath();
-                if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                {
-                    ConfigNode root = ConfigNode.Load(path);
-                    if (root != null)
-                    {
-                        ConfigNode[] nodes = root.GetNodes("KERBALFX_AERO_FX");
-                        if (nodes != null)
-                            for (int i = 0; i < nodes.Length; i++)
-                                if (nodes[i] != null)
-                                    KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.20f, 2.50f);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogHotReloadFailed, ex.Message));
-            }
+            if (failure != null)
+                AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogHotReloadFailed, failure));
 
             Revision++;
             AeroFxLog.Info(Localizer.Format(
                 AeroFxLoc.LogConfig,
                 "HotReload",
-                "BodyVisibility=" + BodyVisibilityMultipliers.Count.ToString(CultureInfo.InvariantCulture)));
+                "BodyVisibility=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)));
         }
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
-            if (string.IsNullOrEmpty(bodyName))
-                return 1f;
-
-            float multiplier;
-            if (BodyVisibilityMultipliers.TryGetValue(bodyName.Trim(), out multiplier))
-                return Mathf.Clamp(multiplier, 0.20f, 2.50f);
-            return 1f;
+            return bodyProfile.Get(bodyName);
         }
 
-        private static void SeedDefaultBodyVisibility()
+        private static void SeedDefaultBodyVisibility(Dictionary<string, float> dict)
         {
-            BodyVisibilityMultipliers.Clear();
-            BodyVisibilityMultipliers["Kerbin"] = 1.00f;
-            BodyVisibilityMultipliers["Laythe"] = 1.08f;
-            BodyVisibilityMultipliers["Eve"] = 1.16f;
-            BodyVisibilityMultipliers["Jool"] = 0.95f;
-            BodyVisibilityMultipliers["Duna"] = 0.42f;
+            dict["Kerbin"] = 1.00f;
+            dict["Laythe"] = 1.08f;
+            dict["Eve"] = 1.16f;
+            dict["Jool"] = 0.95f;
+            dict["Duna"] = 0.42f;
         }
 
         private static string GetConfigPath()
@@ -225,225 +214,73 @@ namespace KerbalFX.AeroFX
 
     internal static class AeroFxLog
     {
-        public static void Info(string message) { Debug.Log("[KerbalFX] " + message); }
-        public static void DebugLog(string message) { if (AeroFxConfig.DebugLogging) Debug.Log("[KerbalFX] " + message); }
+        private static readonly KerbalFxLog impl = new KerbalFxLog(() => AeroFxConfig.DebugLogging);
+        public static void Info(string message) { impl.Info(message); }
+        public static void DebugLog(string message) { impl.DebugLog(message); }
     }
 
     [KSPAddon(KSPAddon.Startup.Flight, false)]
-    public class AeroFxBootstrap : MonoBehaviour
+    internal class AeroFxBootstrap : KerbalFxVesselControllerBootstrap<VesselAeroController>
     {
-        private readonly Dictionary<Guid, VesselAeroController> controllers = new Dictionary<Guid, VesselAeroController>();
-        private readonly List<VesselAeroController> controllerList = new List<VesselAeroController>();
-        private readonly Dictionary<Guid, float> invalidControllerTimers = new Dictionary<Guid, float>();
-        private readonly List<Guid> removeControllerIds = new List<Guid>(32);
-        private bool controllerListDirty = true;
+        protected override bool IsModuleEnabled { get { return AeroFxConfig.Enabled; } }
+        protected override bool IsDebugLogging { get { return AeroFxConfig.DebugLogging; } }
 
-        private float controllerRefreshTimer;
-        private float settingsRefreshTimer;
-        private float debugHeartbeatTimer;
-        private bool emittersStoppedWhileDisabled;
-
-        private const float ControllerRefreshInterval = 1.0f;
-        private const float SettingsRefreshInterval = 0.5f;
-        private const float ControllerInvalidGraceSeconds = 4.0f;
-        private const float HeartbeatInterval = 2.5f;
-
-        private void Start()
+        protected override void RefreshSettings()
         {
-            AeroFxConfig.Refresh();
-            AeroFxRuntimeConfig.Refresh();
-            RefreshControllers(0f);
-            controllerRefreshTimer = ControllerRefreshInterval;
-            AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogBootstrapStart));
-        }
-
-        private void Update()
-        {
-            if (!HighLogic.LoadedSceneIsFlight)
-                return;
-
-            float dt = Time.deltaTime;
-            RefreshSettingsIfNeeded(dt);
-            if (!AeroFxConfig.Enabled)
-            {
-                if (!emittersStoppedWhileDisabled)
-                {
-                    StopAllEmitters();
-                    emittersStoppedWhileDisabled = true;
-                }
-
-                return;
-            }
-
-            emittersStoppedWhileDisabled = false;
-            RefreshControllersIfNeeded(dt);
-            TickControllers(dt);
-            LogHeartbeatIfNeeded(dt);
-        }
-
-        private void RefreshSettingsIfNeeded(float dt)
-        {
-            settingsRefreshTimer -= dt;
-            if (settingsRefreshTimer > 0f)
-                return;
-
-            settingsRefreshTimer = SettingsRefreshInterval;
             AeroFxConfig.Refresh();
             AeroFxRuntimeConfig.TryHotReloadFromDisk();
         }
 
-        private void RefreshControllersIfNeeded(float dt)
+        protected override void OnBeforeStart()
         {
-            controllerRefreshTimer -= dt;
-            if (controllerRefreshTimer > 0f)
-                return;
-
-            float refreshElapsed = ControllerRefreshInterval - controllerRefreshTimer;
-            controllerRefreshTimer = ControllerRefreshInterval;
-            RefreshControllers(Mathf.Max(0f, refreshElapsed));
+            AeroFxRuntimeConfig.Refresh();
         }
 
-        private void TickControllers(float dt)
-        {
-            if (controllerListDirty)
-            {
-                controllerListDirty = false;
-                controllerList.Clear();
-                var e = controllers.GetEnumerator();
-                while (e.MoveNext())
-                    controllerList.Add(e.Current.Value);
-                e.Dispose();
-            }
-
-            for (int i = 0; i < controllerList.Count; i++)
-                controllerList[i].Tick(dt);
-        }
-
-        private void LogHeartbeatIfNeeded(float dt)
-        {
-            if (!AeroFxConfig.DebugLogging)
-                return;
-
-            debugHeartbeatTimer -= dt;
-            if (debugHeartbeatTimer > 0f)
-                return;
-
-            debugHeartbeatTimer = HeartbeatInterval;
-            AeroFxLog.DebugLog(Localizer.Format(AeroFxLoc.LogHeartbeat, controllers.Count));
-        }
-
-        private void StopAllEmitters()
-        {
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-                e.Current.Value.StopAll();
-            e.Dispose();
-        }
-
-        private void RefreshControllers(float refreshElapsed)
-        {
-            RemoveInvalidControllers(refreshElapsed);
-            AttachOrRefreshLoadedVessels(refreshElapsed);
-        }
-
-        private void RemoveInvalidControllers(float refreshElapsed)
-        {
-            removeControllerIds.Clear();
-
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-            {
-                if (!e.Current.Value.IsStillValid())
-                {
-                    float invalidTimer;
-                    invalidControllerTimers.TryGetValue(e.Current.Key, out invalidTimer);
-                    invalidTimer += refreshElapsed;
-                    invalidControllerTimers[e.Current.Key] = invalidTimer;
-
-                    if (invalidTimer >= ControllerInvalidGraceSeconds)
-                    {
-                        e.Current.Value.Dispose();
-                        removeControllerIds.Add(e.Current.Key);
-                    }
-                }
-                else
-                {
-                    invalidControllerTimers.Remove(e.Current.Key);
-                }
-            }
-            e.Dispose();
-
-            for (int i = 0; i < removeControllerIds.Count; i++)
-                RemoveController(removeControllerIds[i]);
-        }
-
-        private void RemoveController(Guid vesselId)
-        {
-            controllers.Remove(vesselId);
-            invalidControllerTimers.Remove(vesselId);
-            controllerListDirty = true;
-        }
-
-        private void AttachOrRefreshLoadedVessels(float refreshElapsed)
-        {
-            List<Vessel> loaded = FlightGlobals.VesselsLoaded;
-            if (loaded == null)
-                return;
-
-            for (int i = 0; i < loaded.Count; i++)
-            {
-                Vessel vessel = loaded[i];
-                if (!IsSupportedVessel(vessel))
-                    continue;
-
-                VesselAeroController controller;
-                if (controllers.TryGetValue(vessel.id, out controller))
-                {
-                    controller.TryRebuild(refreshElapsed);
-                    continue;
-                }
-
-                TryAttachController(vessel);
-            }
-        }
-
-        private void TryAttachController(Vessel vessel)
-        {
-            VesselAeroController controller = new VesselAeroController(vessel);
-            if (!controller.HasAnyEmitters)
-            {
-                controller.Dispose();
-                return;
-            }
-
-            controllers.Add(vessel.id, controller);
-            invalidControllerTimers.Remove(vessel.id);
-            controllerListDirty = true;
-            AeroFxLog.DebugLog(Localizer.Format(
-                AeroFxLoc.LogAttached,
-                controller.EmitterCount,
-                vessel.vesselName));
-        }
-
-        private static bool IsSupportedVessel(Vessel vessel)
+        protected override bool IsSupportedVessel(Vessel vessel)
         {
             return KerbalFxVesselUtil.IsSupportedFlightVessel(vessel)
                 && vessel.mainBody != null
                 && vessel.mainBody.atmosphere;
         }
 
-        private void OnDestroy()
+        protected override VesselAeroController CreateController(Vessel vessel)
         {
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-                e.Current.Value.Dispose();
-            e.Dispose();
+            return new VesselAeroController(vessel);
+        }
 
-            controllers.Clear();
-            controllerList.Clear();
-            controllerListDirty = true;
-            invalidControllerTimers.Clear();
+        protected override bool ControllerHasEmitters(VesselAeroController controller)
+        {
+            return controller.HasAnyEmitters;
+        }
+
+        protected override int ControllerEmitterCount(VesselAeroController controller)
+        {
+            return controller.EmitterCount;
+        }
+
+        protected override void TryRebuildController(VesselAeroController controller, float refreshElapsed)
+        {
+            controller.TryRebuild(refreshElapsed);
+        }
+
+        protected override void LogBootstrapStart()
+        {
+            AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogBootstrapStart));
+        }
+
+        protected override void LogBootstrapStop()
+        {
             AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogBootstrapStop));
+        }
+
+        protected override void LogHeartbeat(int controllerCount)
+        {
+            AeroFxLog.DebugLog(Localizer.Format(AeroFxLoc.LogHeartbeat, controllerCount));
+        }
+
+        protected override void LogAttached(int emitterCount, string vesselName)
+        {
+            AeroFxLog.DebugLog(Localizer.Format(AeroFxLoc.LogAttached, emitterCount, vesselName));
         }
     }
 }

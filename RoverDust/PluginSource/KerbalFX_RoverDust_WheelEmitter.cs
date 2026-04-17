@@ -25,8 +25,7 @@ namespace KerbalFX.RoverDust
         private bool disposed;
         private bool colorInitialized;
         private bool lastSuppressed;
-        private int appliedUiRevision = -1;
-        private int appliedRuntimeRevision = -1;
+        private KerbalFxRevisionStamp appliedProfileRevision;
         private string lastSuppressionKey = string.Empty;
         private int lastSurfaceColliderId = int.MinValue;
         private string lastSurfaceBody = string.Empty;
@@ -83,8 +82,7 @@ namespace KerbalFX.RoverDust
             if (disposed || wheel == null || part == null)
                 return;
 
-            if (appliedUiRevision != RoverDustConfig.Revision
-                || appliedRuntimeRevision != RoverDustRuntimeConfig.Revision)
+            if (appliedProfileRevision.NeedsApply(RoverDustConfig.Revision, RoverDustRuntimeConfig.Revision))
             {
                 ApplyRuntimeVisualProfile(false);
             }
@@ -219,13 +217,10 @@ namespace KerbalFX.RoverDust
 
         private void ApplyRuntimeVisualProfile(bool force)
         {
-            if (!force
-                && appliedUiRevision == RoverDustConfig.Revision
-                && appliedRuntimeRevision == RoverDustRuntimeConfig.Revision)
+            if (appliedProfileRevision.ShouldSkipApply(force, RoverDustConfig.Revision, RoverDustRuntimeConfig.Revision))
                 return;
 
-            appliedUiRevision = RoverDustConfig.Revision;
-            appliedRuntimeRevision = RoverDustRuntimeConfig.Revision;
+            appliedProfileRevision.MarkApplied(RoverDustConfig.Revision, RoverDustRuntimeConfig.Revision);
 
             int qualityPercent = Mathf.Clamp(RoverDustConfig.QualityPercent, 25, 200);
             float quality = qualityPercent / 100f;

@@ -7,6 +7,7 @@ Atmospheric ribbon condensation module for Kerbal Space Program.
 - Adds ribbon-style atmospheric trails to suitable wings, control surfaces, and fins.
 - Uses up to four emitters per vessel based on detected wing-like anchor parts.
 - Activation based on speed, atmospheric density, dynamic pressure, and maneuver load.
+- Optional light-aware dimming toggle in Difficulty Settings.
 
 ## Depends on
 

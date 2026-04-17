@@ -8,6 +8,7 @@ FX module for separators and decouplers.
 - Spawns sparks, smoke, and chunk fragments for separators.
 - Softer smoke-puff burst for ordinary decouplers.
 - Size-based effects scaling.
+- Distance LOD and pooled particle systems.
 - Supports optional detached-ring despawn flow and hidden-ring cleanup logic.
 
 ## Depends on

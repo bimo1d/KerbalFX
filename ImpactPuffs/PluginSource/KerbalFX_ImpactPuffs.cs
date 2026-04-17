@@ -7,244 +7,91 @@ using UnityEngine;
 namespace KerbalFX.ImpactPuffs
 {
     [KSPAddon(KSPAddon.Startup.Flight, false)]
-    public class ImpactPuffsBootstrap : MonoBehaviour
+    internal class ImpactPuffsBootstrap : KerbalFxVesselControllerBootstrap<VesselImpactController>
     {
-        private readonly Dictionary<Guid, VesselImpactController> controllers = new Dictionary<Guid, VesselImpactController>();
-        private readonly List<VesselImpactController> controllerList = new List<VesselImpactController>();
-        private bool controllerListDirty = true;
-        private readonly Dictionary<Guid, float> invalidControllerTimers = new Dictionary<Guid, float>();
-        private readonly List<Guid> removeControllerIds = new List<Guid>(32);
+        protected override bool IsModuleEnabled { get { return ImpactPuffsConfig.Enabled; } }
+        protected override bool IsDebugLogging { get { return ImpactPuffsConfig.DebugLogging; } }
 
-        private float controllerRefreshTimer;
-        private float settingsRefreshTimer;
-        private float debugHeartbeatTimer;
-        private bool emittersStoppedWhileDisabled;
-
-        private const float ControllerRefreshInterval = 1.0f;
-        private const float SettingsRefreshInterval = 0.5f;
-        private const float ControllerInvalidGraceSeconds = 4.0f;
-        private const float HeartbeatInterval = 2.5f;
-
-        private void Start()
+        protected override void RefreshSettings()
         {
-            ImpactPuffsConfig.Refresh();
-            ImpactPuffsRuntimeConfig.Refresh();
-            EngineGroundPuffEmitter.CleanupSunOcclusionCache(true);
-            RefreshControllers(0f);
-            controllerRefreshTimer = ControllerRefreshInterval;
-            ImpactPuffsLog.Info(Localizer.Format(ImpactPuffsLoc.LogBootstrapStart));
-        }
-
-        private void Update()
-        {
-            if (!HighLogic.LoadedSceneIsFlight)
-            {
-                return;
-            }
-
-            float dt = Time.deltaTime;
-            RefreshSettingsIfNeeded(dt);
-            if (!ImpactPuffsConfig.Enabled)
-            {
-                if (!emittersStoppedWhileDisabled)
-                {
-                    StopAllEmitters();
-                    emittersStoppedWhileDisabled = true;
-                }
-
-                EngineGroundPuffEmitter.CleanupSunOcclusionCache(false);
-                return;
-            }
-
-            emittersStoppedWhileDisabled = false;
-            RefreshControllersIfNeeded(dt);
-            TickControllers(dt);
-            LogHeartbeatIfNeeded(dt);
-            EngineGroundPuffEmitter.CleanupSunOcclusionCache(false);
-        }
-
-        private void RefreshSettingsIfNeeded(float dt)
-        {
-            settingsRefreshTimer -= dt;
-            if (settingsRefreshTimer > 0f)
-            {
-                return;
-            }
-
-            settingsRefreshTimer = SettingsRefreshInterval;
             ImpactPuffsConfig.Refresh();
             ImpactPuffsRuntimeConfig.TryHotReloadFromDisk();
         }
 
-        private void RefreshControllersIfNeeded(float dt)
+        protected override void OnBeforeStart()
         {
-            controllerRefreshTimer -= dt;
-            if (controllerRefreshTimer > 0f)
-            {
-                return;
-            }
-
-            float refreshElapsed = ControllerRefreshInterval - controllerRefreshTimer;
-            controllerRefreshTimer = ControllerRefreshInterval;
-            RefreshControllers(Mathf.Max(0f, refreshElapsed));
+            ImpactPuffsRuntimeConfig.Refresh();
+            EngineGroundPuffEmitter.CleanupSunOcclusionCache(true);
         }
 
-        private void TickControllers(float dt)
+        protected override void OnFrameEnabled(float dt)
         {
-            if (controllerListDirty)
-            {
-                controllerListDirty = false;
-                controllerList.Clear();
-                var e = controllers.GetEnumerator();
-                while (e.MoveNext())
-                    controllerList.Add(e.Current.Value);
-                e.Dispose();
-            }
-            for (int i = 0; i < controllerList.Count; i++)
-                controllerList[i].Tick(dt);
+            EngineGroundPuffEmitter.CleanupSunOcclusionCache(false);
         }
 
-        private void LogHeartbeatIfNeeded(float dt)
+        protected override void OnFrameDisabled(float dt)
         {
-            if (!ImpactPuffsConfig.DebugLogging)
-            {
-                return;
-            }
-
-            debugHeartbeatTimer -= dt;
-            if (debugHeartbeatTimer > 0f)
-            {
-                return;
-            }
-
-            debugHeartbeatTimer = HeartbeatInterval;
-            ImpactPuffsLog.DebugLog(Localizer.Format(ImpactPuffsLoc.LogHeartbeat, controllers.Count));
+            EngineGroundPuffEmitter.CleanupSunOcclusionCache(false);
         }
 
-        private void StopAllEmitters()
+        protected override void OnBeforeDestroy()
         {
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-                e.Current.Value.StopAll();
-            e.Dispose();
+            EngineGroundPuffEmitter.CleanupSunOcclusionCache(true);
         }
 
-        private void RefreshControllers(float refreshElapsed)
-        {
-            RemoveInvalidControllers(refreshElapsed);
-            AttachOrRefreshLoadedVessels();
-        }
-
-        private void RemoveInvalidControllers(float refreshElapsed)
-        {
-            removeControllerIds.Clear();
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-            {
-                if (!e.Current.Value.IsStillValid())
-                {
-                    float invalidTimer;
-                    invalidControllerTimers.TryGetValue(e.Current.Key, out invalidTimer);
-                    invalidTimer += refreshElapsed;
-                    invalidControllerTimers[e.Current.Key] = invalidTimer;
-
-                    if (invalidTimer >= ControllerInvalidGraceSeconds)
-                    {
-                        e.Current.Value.Dispose();
-                        removeControllerIds.Add(e.Current.Key);
-                    }
-                }
-                else
-                {
-                    invalidControllerTimers.Remove(e.Current.Key);
-                }
-            }
-            e.Dispose();
-
-            for (int i = 0; i < removeControllerIds.Count; i++)
-            {
-                RemoveController(removeControllerIds[i]);
-            }
-        }
-
-        private void RemoveController(Guid vesselId)
-        {
-            controllers.Remove(vesselId);
-            invalidControllerTimers.Remove(vesselId);
-            controllerListDirty = true;
-        }
-
-        private void AttachOrRefreshLoadedVessels()
-        {
-            List<Vessel> loaded = FlightGlobals.VesselsLoaded;
-            if (loaded == null)
-            {
-                return;
-            }
-
-            for (int i = 0; i < loaded.Count; i++)
-            {
-                Vessel vessel = loaded[i];
-                if (!IsSupportedVessel(vessel))
-                {
-                    continue;
-                }
-
-                VesselImpactController controller;
-                if (controllers.TryGetValue(vessel.id, out controller))
-                {
-                    controller.TryRebuild();
-                    continue;
-                }
-
-                TryAttachController(vessel);
-            }
-        }
-
-        private void TryAttachController(Vessel vessel)
-        {
-            VesselImpactController controller = new VesselImpactController(vessel);
-            if (!controller.HasAnyEmitters)
-            {
-                controller.Dispose();
-                return;
-            }
-
-            controllers.Add(vessel.id, controller);
-            invalidControllerTimers.Remove(vessel.id);
-            controllerListDirty = true;
-            ImpactPuffsLog.DebugLog(Localizer.Format(ImpactPuffsLoc.LogAttached, controller.EngineEmitterCount, vessel.vesselName));
-        }
-
-        private static bool IsSupportedVessel(Vessel vessel)
+        protected override bool IsSupportedVessel(Vessel vessel)
         {
             return KerbalFxVesselUtil.IsSupportedFlightVessel(vessel);
         }
 
-        private void OnDestroy()
+        protected override VesselImpactController CreateController(Vessel vessel)
         {
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-                e.Current.Value.Dispose();
-            e.Dispose();
+            return new VesselImpactController(vessel);
+        }
 
-            controllers.Clear();
-            controllerList.Clear();
-            controllerListDirty = true;
-            invalidControllerTimers.Clear();
-            EngineGroundPuffEmitter.CleanupSunOcclusionCache(true);
+        protected override bool ControllerHasEmitters(VesselImpactController controller)
+        {
+            return controller.HasAnyEmitters;
+        }
+
+        protected override int ControllerEmitterCount(VesselImpactController controller)
+        {
+            return controller.EngineEmitterCount;
+        }
+
+        protected override void TryRebuildController(VesselImpactController controller, float refreshElapsed)
+        {
+            controller.TryRebuild();
+        }
+
+        protected override void LogBootstrapStart()
+        {
+            ImpactPuffsLog.Info(Localizer.Format(ImpactPuffsLoc.LogBootstrapStart));
+        }
+
+        protected override void LogBootstrapStop()
+        {
             ImpactPuffsLog.Info(Localizer.Format(ImpactPuffsLoc.LogBootstrapStop));
+        }
+
+        protected override void LogHeartbeat(int controllerCount)
+        {
+            ImpactPuffsLog.DebugLog(Localizer.Format(ImpactPuffsLoc.LogHeartbeat, controllerCount));
+        }
+
+        protected override void LogAttached(int emitterCount, string vesselName)
+        {
+            ImpactPuffsLog.DebugLog(Localizer.Format(ImpactPuffsLoc.LogAttached, emitterCount, vesselName));
         }
     }
 
-    internal sealed class VesselImpactController
+    internal sealed class VesselImpactController : IVesselFxController
     {
         private readonly Vessel vessel;
         private readonly List<EngineGroundPuffEmitter> engineEmitters = new List<EngineGroundPuffEmitter>();
-        private readonly List<ModuleEngines> activeEngineModules = new List<ModuleEngines>(8);
+        private readonly HashSet<ModuleEngines> activeEngineModules = new HashSet<ModuleEngines>();
+        private KerbalFxVesselPartSnapshot partSnapshot;
         private TouchdownBurstEmitter touchdownEmitter;
-        private int cachedPartCount = -1;
-        private uint cachedPartSignature;
         private int acceptedEngineCount = 0;
         private static readonly string[] EngineTypeRejectTokens = { "mono", "rcs", "turbine", "jet", "scram", "airbreathing" };
         private static readonly string[] EngineIdRejectTokens = { "rcs", "monoprop", "mono", "vernier" };
@@ -278,8 +125,7 @@ namespace KerbalFX.ImpactPuffs
                 return;
             }
 
-            if (vessel.parts.Count != cachedPartCount
-                || KerbalFxUtil.ComputeVesselPartSignature(vessel) != cachedPartSignature)
+            if (partSnapshot.HasChanged(vessel))
             {
                 RebuildEmitters();
             }
@@ -302,12 +148,10 @@ namespace KerbalFX.ImpactPuffs
                 }
 
                 ModuleEngines engineModule = engineEmitters[i].EngineModule;
-                if (engineModule == null || activeEngineModules.Contains(engineModule))
+                if (engineModule == null || !activeEngineModules.Add(engineModule))
                 {
                     continue;
                 }
-
-                activeEngineModules.Add(engineModule);
             }
 
             int activeCluster = Mathf.Max(1, activeEngineModules.Count);
@@ -343,8 +187,7 @@ namespace KerbalFX.ImpactPuffs
         private void RebuildEmitters()
         {
             DisposeEmitters();
-            cachedPartCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
-            cachedPartSignature = vessel != null ? KerbalFxUtil.ComputeVesselPartSignature(vessel) : 0u;
+            partSnapshot.Capture(vessel);
             acceptedEngineCount = 0;
 
             if (vessel == null || vessel.parts == null)
@@ -411,16 +254,7 @@ namespace KerbalFX.ImpactPuffs
         private void AddEngineEmittersForTransforms(Part part, ModuleEngines engine)
         {
             List<Transform> transforms = ResolveThrustTransforms(engine, part);
-            if (transforms.Count == 0)
-            {
-                engineEmitters.Add(new EngineGroundPuffEmitter(part, engine, null));
-                return;
-            }
-
-            for (int i = 0; i < transforms.Count; i++)
-            {
-                engineEmitters.Add(new EngineGroundPuffEmitter(part, engine, transforms[i]));
-            }
+            engineEmitters.Add(new EngineGroundPuffEmitter(part, engine, transforms));
         }
 
         private void ApplyEmitterClusterSize()

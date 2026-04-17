@@ -26,15 +26,22 @@ namespace KerbalFX.AeroFX
         public float Load01;
         public float NearGround01;
         public float Length01;
+        public float Maneuver01;
+        public float ManeuverGate01;
         public float Curl01;
+        public float LightFactor;
     }
 
-    internal sealed class VesselAeroController
+    internal sealed class VesselAeroController : IVesselFxController
     {
         private const int MaxEmitters = 6;
         private const float SampleDebugInterval = 0.8f;
         private const float AnchorSwitchMargin = 0.45f;
         private const float EmitterGraceSeconds = 4.0f;
+        private const float LightFadeInSpeed = 0.75f;
+        private const float LightFadeOutSpeed = 0.45f;
+        private const float ManeuverGateFadeInSpeed = 0.62f;
+        private const float ManeuverGateFadeOutSpeed = 12.00f;
 
         private readonly Vessel vessel;
         private readonly WingtipRibbonAnchor[] anchors = new WingtipRibbonAnchor[MaxEmitters];
@@ -55,6 +62,10 @@ namespace KerbalFX.AeroFX
         private string lastCandidateSummary = "none";
         private float anchorRefreshTimer;
         private float sampleDebugTimer;
+        private float smoothedLightFactor = 1f;
+        private bool hasSmoothedLightFactor;
+        private float smoothedManeuverGate = 1f;
+        private bool hasSmoothedManeuverGate;
 
         public VesselAeroController(Vessel vessel)
         {
@@ -361,6 +372,11 @@ namespace KerbalFX.AeroFX
             float mach01 = Mathf.InverseLerp(AeroFxRuntimeConfig.MinMach, AeroFxRuntimeConfig.FullMach, mach);
             float load01 = Mathf.InverseLerp(AeroFxRuntimeConfig.MinLoadFactor, AeroFxRuntimeConfig.FullLoadFactor, loadFactor);
             float nearGround01 = 1f - Mathf.InverseLerp(1200f, 9000f, radarAltitude);
+            float angularMotion = vessel.angularVelocity != Vector3.zero
+                ? vessel.angularVelocity.magnitude
+                : 0f;
+            float maneuverCurl = Mathf.InverseLerp(1.08f, 2.60f, loadFactor);
+            float angularCurl = Mathf.InverseLerp(0.06f, 0.65f, angularMotion);
 
             float baseCondense = density01 * Mathf.Lerp(0.58f, 1.00f, pressure01);
             float speedBias = Mathf.Lerp(0.94f, 1f, speed01);
@@ -372,6 +388,35 @@ namespace KerbalFX.AeroFX
             float bodyVisibility = AeroFxRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
             activation *= speedActivationGate;
             activation *= bodyVisibility;
+            if (AeroFxConfig.UseManeuverOnly)
+            {
+                float targetManeuverGate = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.10f, 0.28f, angularMotion));
+                if (!hasSmoothedManeuverGate)
+                {
+                    smoothedManeuverGate = targetManeuverGate;
+                    hasSmoothedManeuverGate = true;
+                }
+                else
+                {
+                    float maneuverGateFadeSpeed = targetManeuverGate > smoothedManeuverGate
+                        ? ManeuverGateFadeInSpeed
+                        : ManeuverGateFadeOutSpeed;
+                    smoothedManeuverGate = Mathf.Lerp(
+                        smoothedManeuverGate,
+                        targetManeuverGate,
+                        Mathf.Clamp01(dt * maneuverGateFadeSpeed));
+                }
+
+                float maneuverLoadBoost = Mathf.Lerp(0.90f, 1.15f, maneuverCurl);
+                activation *= smoothedManeuverGate * maneuverLoadBoost;
+                sample.ManeuverGate01 = smoothedManeuverGate;
+            }
+            else
+            {
+                smoothedManeuverGate = 1f;
+                hasSmoothedManeuverGate = false;
+                sample.ManeuverGate01 = 1f;
+            }
             if (activation < AeroFxRuntimeConfig.ActivationFloor)
                 activation = 0f;
 
@@ -393,6 +438,37 @@ namespace KerbalFX.AeroFX
             sample.Mach01 = mach01;
             sample.Load01 = load01;
             sample.NearGround01 = nearGround01;
+            Vector3 bodyPosition = (Vector3)vessel.mainBody.position;
+            Vector3 lightSamplePoint = vessel.rootPart != null
+                ? vessel.rootPart.transform.position
+                : bodyPosition;
+            Vector3 lightBodyUp = lightSamplePoint - bodyPosition;
+            float targetLightFactor = AeroFxConfig.UseLightAware
+                ? KerbalFxSunLight.GetBodyDaylightFactor(
+                    vessel,
+                    lightSamplePoint,
+                    lightBodyUp,
+                    AeroFxRuntimeConfig.LightDaylightFloor,
+                    AeroFxRuntimeConfig.LightShadowFloor)
+                : 1f;
+
+            if (!hasSmoothedLightFactor || !AeroFxConfig.UseLightAware)
+            {
+                smoothedLightFactor = targetLightFactor;
+                hasSmoothedLightFactor = true;
+            }
+            else
+            {
+                float lightFadeSpeed = targetLightFactor > smoothedLightFactor
+                    ? LightFadeInSpeed
+                    : LightFadeOutSpeed;
+                smoothedLightFactor = Mathf.Lerp(
+                    smoothedLightFactor,
+                    targetLightFactor,
+                    Mathf.Clamp01(dt * lightFadeSpeed));
+            }
+
+            sample.LightFactor = Mathf.Clamp01(smoothedLightFactor);
             float lengthBias = pressure01 * 0.26f + density01 * 0.16f + nearGround01 * 0.10f + load01 * 0.12f;
             float lowSpeedLengthBoost = 1f - Mathf.InverseLerp(110f, 200f, speed);
             float highSpeedShorten = 1f - Mathf.InverseLerp(120f, 320f, speed);
@@ -402,11 +478,7 @@ namespace KerbalFX.AeroFX
             float lowSpeedCurlBoost = 1f - Mathf.InverseLerp(125f, 180f, speed);
             float post180CurlFade = 1f - Mathf.InverseLerp(220f, 420f, speed);
             float sonicCurlFade = 1f - Mathf.InverseLerp(1.10f, 1.55f, mach);
-            float maneuverCurl = Mathf.InverseLerp(1.08f, 2.60f, loadFactor);
-            float angularMotion = vessel.angularVelocity != Vector3.zero
-                ? vessel.angularVelocity.magnitude
-                : 0f;
-            float angularCurl = Mathf.InverseLerp(0.06f, 0.65f, angularMotion);
+            sample.Maneuver01 = Mathf.Clamp01(maneuverCurl * 0.58f + angularCurl * 0.72f + load01 * 0.12f);
             float straightCurl = pressure01 * 0.04f + density01 * 0.03f + nearGround01 * 0.02f;
             float maneuverResponse = maneuverCurl * (0.52f + lowSpeedCurlBoost * 0.58f)
                 + angularCurl * (0.42f + lowSpeedCurlBoost * 0.44f);

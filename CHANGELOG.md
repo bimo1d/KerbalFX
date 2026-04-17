@@ -1,3 +1,13 @@
+## 0.7
+- Split KerbalFX into a shared `Core` runtime plus independent separate module DLLs for `AeroFX`, `BlastFX`, `Impact Puffs`, and `Rover Dust`.
+- Fixed **Impact Puffs** handling for single-part multi-nozzle engines so one `ModuleEngines` with multiple thrust transforms uses one plume-ground emitter instead of duplicating full-thrust effects per nozzle.
+- Added **Impact Puffs** quality scaling from 25% to 200%, matching the Rover Dust settings style.
+- Reworked **BlastFX** separator bursts with size-class scaling, lower particle counts for small separators, distance LOD, and pooled particle systems to hopefully reduce deployment spikes.
+- Added **AeroFX** light-aware ribbon dimming with a Difficulty Settings toggle.
+- Improved **AeroFX** ribbon behavior with more stable anchor tracking, stronger high-speed maneuver curvature, and proper four-way radial fin selection for rocket stabilizers.
+- Improved **AeroFX** upper-atmosphere fade-out so ribbons now disappear out smoothly instead of suddenly cutting off when leaving the atmosphere.
+- Added an optional **AeroFX** maneuver-only mode.
+
 ## 0.6.2
 - **AeroFX** anchor and wingtip-extension fixes with general cleanup.
 - Reworked **Impact Puffs** multi-engine volumetric shaping with petal-style separation, faster startup/restart response, lower thrust activation, and more reliable terrain and touchdown probing. Simplified mode is now deprecated.

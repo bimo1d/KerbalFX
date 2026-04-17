@@ -8,6 +8,7 @@ Ground interaction FX module for launch and landing.
 - Adds one-shot touchdown impact bursts on harder landings.
 - Adds volumetric plume-ground puffs for launch and landing. Works best with single-engine vessels.
 - Supports improved multi-engine shaping and more reliable touchdown probing.
+- Quality scaling from 25% to 200% in Difficulty Settings.
 - Uses real engine output from `ModuleEngines`, so it stays compatible with Waterfall.
 
 ## Depends on

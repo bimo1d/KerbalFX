@@ -4,6 +4,7 @@ Lightweight modular FX framework for Kerbal Space Program.
 
 KerbalFX is built as one core plugin with independent FX modules.
 Each module can be enabled or disabled separately.
+Optional module installs require `KerbalFX Core`.
 
 ## Current modules
 
@@ -43,12 +44,15 @@ FX module for separators and decouplers.
 ## Installation
 
 1. Download the latest release from [Releases](https://github.com/bimo1d/KerbalFX/releases).
-2. Copy the `KerbalFX` folder into your KSP `GameData`.
-3. Remove older KerbalFX files before updating.
+2. Install `KerbalFX Core`.
+3. Install any KerbalFX modules you want to use.
+4. Copy the `KerbalFX` folder of selected modules into your KSP `GameData`.
+5. Remove older KerbalFX files before updating.
 
 ## Dependencies
 
 - ModuleManager
+- `KerbalFX Core` is required for all optional KerbalFX modules.
 
 ## Configuration
 

@@ -20,13 +20,13 @@ namespace KerbalFX.AeroFX
         private readonly List<RibbonPoint> ribbon = new List<RibbonPoint>(512);
         private readonly List<Vector3> renderPositions = new List<Vector3>(2048);
         private readonly List<Vector3> worldPoints = new List<Vector3>(512);
+        private Vector3[] renderPositionsBuffer = new Vector3[64];
 
         private bool disposed;
         private float smoothedIntensity;
         private float curlPhase;
         private float debugTimer;
-        private int appliedUiRevision = -1;
-        private int appliedRuntimeRevision = -1;
+        private KerbalFxRevisionStamp appliedProfileRevision;
         private Vector3 lastEmitBodyLocalPosition;
         private bool hasLastEmitBodyLocalPosition;
         private Vector3 smoothedAirflow;
@@ -36,7 +36,11 @@ namespace KerbalFX.AeroFX
         private GradientAlphaKey[] cachedAlphaKeys;
         private Transform bodyTransform;
         private bool isEmitting;
+        private bool hasLiveHeadSegment;
+        private bool pendingManeuverRestartClear;
         private float lastAppliedHeadAlpha = -1f;
+        private Vector3 liveHeadWorldPosition;
+        private Vector3 liveBridgeWorldPosition;
 
         private const float DebugLogInterval = 1.2f;
         private const float IntensityOnThreshold = 0.012f;
@@ -80,8 +84,7 @@ namespace KerbalFX.AeroFX
             if (disposed || line == null || !anchor.IsValid)
                 return;
 
-            if (appliedUiRevision != AeroFxConfig.Revision
-                || appliedRuntimeRevision != AeroFxRuntimeConfig.Revision)
+            if (appliedProfileRevision.NeedsApply(AeroFxConfig.Revision, AeroFxRuntimeConfig.Revision))
             {
                 ApplyRuntimeProfile(false);
             }
@@ -97,6 +100,8 @@ namespace KerbalFX.AeroFX
                     hasLastEmitBodyLocalPosition = false;
                     hasSmoothedAirflow = false;
                     isEmitting = false;
+                    hasLiveHeadSegment = false;
+                    pendingManeuverRestartClear = false;
                     lastAppliedHeadAlpha = -1f;
                 }
                 lastSituation = currentSituation;
@@ -115,6 +120,8 @@ namespace KerbalFX.AeroFX
                 hasSmoothedAirflow = false;
                 hasLastEmitBodyLocalPosition = false;
                 isEmitting = false;
+                hasLiveHeadSegment = false;
+                pendingManeuverRestartClear = false;
                 lastAppliedHeadAlpha = -1f;
             }
 
@@ -125,7 +132,10 @@ namespace KerbalFX.AeroFX
             float speedLengthScale = Mathf.Lerp(1.20f, 0.45f, sample.Speed01);
             float machLengthScale = Mathf.Lerp(1.00f, 0.70f, sample.Mach01);
             float highSpeedCutoff = 1f - Mathf.InverseLerp(480f, 650f, sample.Speed) * 0.55f;
-            trailTime *= speedLengthScale * machLengthScale * highSpeedCutoff;
+            float highSpeedHistoryBoost = Mathf.InverseLerp(240f, 620f, sample.Speed) * sample.Maneuver01;
+            float recoveredHighSpeedCutoff = Mathf.Lerp(highSpeedCutoff, Mathf.Max(highSpeedCutoff, 0.96f), highSpeedHistoryBoost);
+            float maneuverHistoryScale = Mathf.Lerp(1f, 3.15f, highSpeedHistoryBoost);
+            trailTime *= speedLengthScale * machLengthScale * recoveredHighSpeedCutoff * maneuverHistoryScale;
 
             float now = Time.time;
             int trimCount = 0;
@@ -138,10 +148,11 @@ namespace KerbalFX.AeroFX
 
             Vector3 anchorPoint = anchor.WorldPoint;
             Vector3 anchorOutward = anchor.Outward;
-            if (anchor.Part != null && anchor.Part.transform != null)
+            Part trackingPart = anchor.TrackingPart != null ? anchor.TrackingPart : anchor.Part;
+            if (trackingPart != null && trackingPart.transform != null)
             {
-                anchorPoint = anchor.Part.transform.TransformPoint(anchor.LocalPoint);
-                anchorOutward = anchor.Part.transform.TransformDirection(anchor.LocalOutward);
+                anchorPoint = trackingPart.transform.TransformPoint(anchor.LocalPoint);
+                anchorOutward = trackingPart.transform.TransformDirection(anchor.LocalOutward);
                 if (anchorOutward.sqrMagnitude > 0.0001f)
                     anchorOutward.Normalize();
                 else
@@ -154,9 +165,25 @@ namespace KerbalFX.AeroFX
             float fadeSpeed = targetIntensity > smoothedIntensity
                 ? AeroFxRuntimeConfig.FadeInSpeed
                 : AeroFxRuntimeConfig.FadeOutSpeed;
+            if (AeroFxConfig.UseManeuverOnly && targetIntensity <= smoothedIntensity)
+            {
+                float maneuverGateHold01 = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.02f, 0.22f, sample.ManeuverGate01));
+                fadeSpeed *= Mathf.Lerp(10.00f, 1f, maneuverGateHold01);
+            }
             smoothedIntensity = Mathf.Lerp(smoothedIntensity, targetIntensity, Mathf.Clamp01(dt * fadeSpeed));
 
+            if (AeroFxConfig.UseManeuverOnly)
+            {
+                if (sample.ManeuverGate01 < 0.02f && smoothedIntensity < 0.02f && ribbon.Count > 0)
+                    pendingManeuverRestartClear = true;
+            }
+            else
+            {
+                pendingManeuverRestartClear = false;
+            }
+
             Vector3 tipOffset = anchorOutward * Mathf.Lerp(0.02f, 0.05f, sample.Length01);
+            Vector3 headWorldPosition = anchorPoint + tipOffset;
 
             Vector3 currentAirflow = sample.AirflowBack;
             if (!hasSmoothedAirflow)
@@ -189,13 +216,12 @@ namespace KerbalFX.AeroFX
                 AeroFxRuntimeConfig.CurlAmplitudeMax,
                 sample.Curl01);
             float post120AmplitudeFade = Mathf.Lerp(1.00f, 0.74f, post120FrequencyBoost);
-            float highSpeedManeuverBoost = Mathf.InverseLerp(250f, 400f, sample.Speed)
-                * Mathf.InverseLerp(1.10f, 2.50f, sample.LoadFactor);
+            float highSpeedManeuverBoost = Mathf.InverseLerp(220f, 560f, sample.Speed) * sample.Maneuver01;
             float curlDamping = Mathf.Lerp(0.62f, 1.00f, highSpeedMotionFade);
             curlDamping *= Mathf.Lerp(0.92f, 1.28f, lowSpeedMotionBoost);
             curlDamping *= Mathf.Lerp(0.98f, 1.30f, maneuverMotionBoost);
             curlDamping *= post120AmplitudeFade;
-            curlDamping *= Mathf.Lerp(1.00f, 2.80f, highSpeedManeuverBoost);
+            curlDamping *= Mathf.Lerp(1.00f, 3.75f, highSpeedManeuverBoost);
             Vector3 curlOffset = (sample.UpAxis * (Mathf.Sin(curlPhase) * curlAmount)
                 + anchorOutward * (Mathf.Cos(curlPhase * 0.7f) * curlAmount * 0.6f)) * curlDamping;
 
@@ -221,14 +247,26 @@ namespace KerbalFX.AeroFX
                     hasSmoothedAirflow = false;
                     hasLastEmitBodyLocalPosition = false;
                     isEmitting = false;
+                    hasLiveHeadSegment = false;
+                    pendingManeuverRestartClear = false;
                     lastAppliedHeadAlpha = -1f;
                 }
             }
 
+            bool wasEmitting = isEmitting;
             if (!isEmitting && smoothedIntensity > IntensityOnThreshold)
                 isEmitting = true;
             else if (isEmitting && smoothedIntensity < IntensityOffThreshold)
                 isEmitting = false;
+
+            if (pendingManeuverRestartClear && !wasEmitting && isEmitting)
+            {
+                ribbon.Clear();
+                hasLastEmitBodyLocalPosition = false;
+                hasSmoothedAirflow = false;
+                hasLiveHeadSegment = false;
+                pendingManeuverRestartClear = false;
+            }
 
             bool shouldEmit = isEmitting;
             if (shouldEmit && ribbon.Count < MaxRibbonPoints)
@@ -250,6 +288,16 @@ namespace KerbalFX.AeroFX
                     rp.Time = now;
                     ribbon.Add(rp);
                 }
+            }
+            if (shouldEmit)
+            {
+                hasLiveHeadSegment = true;
+                liveHeadWorldPosition = headWorldPosition;
+                liveBridgeWorldPosition = Vector3.Lerp(newWorldPosition, headWorldPosition, 0.72f);
+            }
+            else
+            {
+                hasLiveHeadSegment = false;
             }
 
             lastEmitBodyLocalPosition = newBodyLocalPosition;
@@ -284,6 +332,7 @@ namespace KerbalFX.AeroFX
         {
             smoothedIntensity = Mathf.Min(smoothedIntensity, 0.02f);
             isEmitting = false;
+            hasLiveHeadSegment = false;
         }
 
         public void Dispose()
@@ -298,6 +347,7 @@ namespace KerbalFX.AeroFX
                 line.positionCount = 0;
                 line.enabled = false;
             }
+            pendingManeuverRestartClear = false;
             if (root != null)
                 Object.Destroy(root);
         }
@@ -323,12 +373,29 @@ namespace KerbalFX.AeroFX
                 return;
             }
 
-            line.positionCount = renderCount >= 2 ? renderCount : 2;
-            for (int i = 0; i < renderCount; i++)
-                line.SetPosition(i, renderPositions[i]);
+            if (hasLiveHeadSegment)
+            {
+                renderPositions.Add(liveBridgeWorldPosition);
+                renderPositions.Add(liveHeadWorldPosition);
+                renderCount = renderPositions.Count;
+            }
 
+            int effectiveCount = renderCount >= 2 ? renderCount : 2;
+            if (renderPositionsBuffer.Length < effectiveCount)
+            {
+                int newCapacity = Mathf.Max(renderPositionsBuffer.Length, 64);
+                while (newCapacity < effectiveCount)
+                    newCapacity *= 2;
+                renderPositionsBuffer = new Vector3[newCapacity];
+            }
+
+            for (int i = 0; i < renderCount; i++)
+                renderPositionsBuffer[i] = renderPositions[i];
             if (renderCount == 1)
-                line.SetPosition(1, renderPositions[0]);
+                renderPositionsBuffer[1] = renderPositions[0];
+
+            line.positionCount = effectiveCount;
+            line.SetPositions(renderPositionsBuffer);
         }
 
         private void UpdateLineDynamics(AeroRibbonSample sample)
@@ -346,17 +413,19 @@ namespace KerbalFX.AeroFX
             float loadWidthScale = Mathf.Lerp(0.90f, 1.40f, sample.Load01);
             line.widthMultiplier = widthBase * speedWidthScale * loadWidthScale;
 
-            float alphaHead = Mathf.Lerp(0.38f, BaseAlpha, intensity);
-            if (cachedGradient != null && cachedAlphaKeys != null && cachedAlphaKeys.Length >= 5)
+            float lightAlphaScale = Mathf.Pow(Mathf.Clamp01(sample.LightFactor), 1.35f);
+            float alphaScale = Mathf.Sqrt(Mathf.Clamp01(intensity)) * lightAlphaScale;
+            if (cachedGradient != null && cachedAlphaKeys != null && cachedAlphaKeys.Length >= 6
+                && Mathf.Abs(alphaScale - lastAppliedHeadAlpha) > 0.004f)
             {
-                if (Mathf.Abs(alphaHead - lastAppliedHeadAlpha) > 0.01f)
-                {
-                    cachedAlphaKeys[3].alpha = alphaHead * 0.92f;
-                    cachedAlphaKeys[4].alpha = alphaHead;
-                    cachedGradient.SetKeys(cachedGradient.colorKeys, cachedAlphaKeys);
-                    line.colorGradient = cachedGradient;
-                    lastAppliedHeadAlpha = alphaHead;
-                }
+                cachedAlphaKeys[1].alpha = BaseAlpha * 0.24f * alphaScale;
+                cachedAlphaKeys[2].alpha = BaseAlpha * 0.72f * alphaScale;
+                cachedAlphaKeys[3].alpha = BaseAlpha * 0.94f * alphaScale;
+                cachedAlphaKeys[4].alpha = BaseAlpha * 0.92f * alphaScale;
+                cachedAlphaKeys[5].alpha = 0.02f * alphaScale;
+                cachedGradient.SetKeys(cachedGradient.colorKeys, cachedAlphaKeys);
+                line.colorGradient = cachedGradient;
+                lastAppliedHeadAlpha = alphaScale;
             }
         }
 
@@ -412,15 +481,12 @@ namespace KerbalFX.AeroFX
 
         private void ApplyRuntimeProfile(bool force)
         {
-            if (!force
-                && appliedUiRevision == AeroFxConfig.Revision
-                && appliedRuntimeRevision == AeroFxRuntimeConfig.Revision)
+            if (appliedProfileRevision.ShouldSkipApply(force, AeroFxConfig.Revision, AeroFxRuntimeConfig.Revision))
             {
                 return;
             }
 
-            appliedUiRevision = AeroFxConfig.Revision;
-            appliedRuntimeRevision = AeroFxRuntimeConfig.Revision;
+            appliedProfileRevision.MarkApplied(AeroFxConfig.Revision, AeroFxRuntimeConfig.Revision);
             lastAppliedHeadAlpha = -1f;
         }
 
@@ -454,7 +520,9 @@ namespace KerbalFX.AeroFX
                 for (int step = 0; step < SegmentSubdivisions; step++)
                 {
                     float u = (float)step / SegmentSubdivisions;
-                    renderPositions.Add(CatmullRom(p0, p1, p2, p3, u));
+                    renderPositions.Add(i == baseCount - 2
+                        ? Vector3.Lerp(p1, p2, u)
+                        : CatmullRom(p0, p1, p2, p3, u));
                 }
             }
 

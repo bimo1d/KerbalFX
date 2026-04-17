@@ -144,77 +144,50 @@ namespace KerbalFX.RoverDust
         public const float DaylightRateFloor = 0.42f;
         public const float DaylightAlphaFloor = 0.40f;
 
-        private static readonly Dictionary<string, float> BodyVisibilityMultipliers =
-            new Dictionary<string, float>(16, StringComparer.OrdinalIgnoreCase);
-        private static DateTime lastConfigWriteUtc = DateTime.MinValue;
+        private static readonly KerbalFxBodyVisibilityProfile bodyProfile =
+            new KerbalFxBodyVisibilityProfile("KERBALFX_ROVER_DUST", GetConfigPath, SeedDefaultBodyVisibility, 0.30f, 3.00f);
 
         public static void Refresh()
         {
-            SeedDefaultBodyVisibility();
-            if (GameDatabase.Instance != null)
-            {
-                ConfigNode[] nodes = GameDatabase.Instance.GetConfigNodes("KERBALFX_ROVER_DUST");
-                if (nodes != null)
-                    for (int i = 0; i < nodes.Length; i++)
-                        if (nodes[i] != null)
-                            KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.30f, 3.00f);
-            }
-            KerbalFxUtil.PrimeConfigFileStamp(GetConfigPath(), ref lastConfigWriteUtc);
+            bodyProfile.Refresh();
             Revision++;
             RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogConfig, "GameDatabase",
-                "BodyVisibility=" + BodyVisibilityMultipliers.Count));
+                "BodyVisibility=" + bodyProfile.Count));
         }
 
         public static void TryHotReloadFromDisk()
         {
-            if (!KerbalFxUtil.HasConfigFileChanged(GetConfigPath(), ref lastConfigWriteUtc))
+            string failure;
+            if (!bodyProfile.TryHotReloadFromDisk(out failure))
                 return;
-            SeedDefaultBodyVisibility();
-            try
-            {
-                string path = GetConfigPath();
-                if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                {
-                    ConfigNode root = ConfigNode.Load(path);
-                    if (root != null)
-                    {
-                        ConfigNode[] nodes = root.GetNodes("KERBALFX_ROVER_DUST");
-                        if (nodes != null)
-                            for (int i = 0; i < nodes.Length; i++)
-                                if (nodes[i] != null)
-                                    KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.30f, 3.00f);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogHotReloadFailed, GetConfigPath(), ex.Message));
-            }
+
+            if (failure != null)
+                RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogHotReloadFailed, GetConfigPath(), failure));
+
             Revision++;
             RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogConfig, "HotReload",
-                "BodyVisibility=" + BodyVisibilityMultipliers.Count));
+                "BodyVisibility=" + bodyProfile.Count));
         }
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
-            return KerbalFxVesselUtil.GetBodyVisibilityMultiplier(bodyName, BodyVisibilityMultipliers, 0.30f, 3.00f);
+            return bodyProfile.Get(bodyName);
         }
 
-        private static void SeedDefaultBodyVisibility()
+        private static void SeedDefaultBodyVisibility(Dictionary<string, float> dict)
         {
-            BodyVisibilityMultipliers.Clear();
-            BodyVisibilityMultipliers["Mun"] = 1.65f;
-            BodyVisibilityMultipliers["Minmus"] = 1.55f;
-            BodyVisibilityMultipliers["Duna"] = 1.00f;
-            BodyVisibilityMultipliers["Moho"] = 1.85f;
-            BodyVisibilityMultipliers["Eeloo"] = 2.00f;
-            BodyVisibilityMultipliers["Eve"] = 1.55f;
-            BodyVisibilityMultipliers["Vall"] = 1.45f;
-            BodyVisibilityMultipliers["Bop"] = 1.45f;
-            BodyVisibilityMultipliers["Dres"] = 1.50f;
-            BodyVisibilityMultipliers["Ike"] = 1.12f;
-            BodyVisibilityMultipliers["Pol"] = 1.15f;
-            BodyVisibilityMultipliers["Tylo"] = 0.92f;
+            dict["Mun"] = 1.65f;
+            dict["Minmus"] = 1.55f;
+            dict["Duna"] = 1.00f;
+            dict["Moho"] = 1.85f;
+            dict["Eeloo"] = 2.00f;
+            dict["Eve"] = 1.55f;
+            dict["Vall"] = 1.45f;
+            dict["Bop"] = 1.45f;
+            dict["Dres"] = 1.50f;
+            dict["Ike"] = 1.12f;
+            dict["Pol"] = 1.15f;
+            dict["Tylo"] = 0.92f;
         }
 
         private static string GetConfigPath()
@@ -225,218 +198,79 @@ namespace KerbalFX.RoverDust
 
     internal static class RoverDustLog
     {
-        public static void Info(string message) { Debug.Log("[KerbalFX] " + message); }
-        public static void DebugLog(string message) { if (RoverDustConfig.DebugLogging) Debug.Log("[KerbalFX] " + message); }
+        private static readonly KerbalFxLog impl = new KerbalFxLog(() => RoverDustConfig.DebugLogging);
+        public static void Info(string message) { impl.Info(message); }
+        public static void DebugLog(string message) { impl.DebugLog(message); }
     }
 
     [KSPAddon(KSPAddon.Startup.Flight, false)]
-    public class RoverDustBootstrap : MonoBehaviour
+    internal class RoverDustBootstrap : KerbalFxVesselControllerBootstrap<VesselDustController>
     {
-        private readonly Dictionary<Guid, VesselDustController> controllers = new Dictionary<Guid, VesselDustController>();
-        private readonly List<VesselDustController> controllerList = new List<VesselDustController>();
-        private readonly List<Guid> removeControllerIds = new List<Guid>(32);
-        private readonly Dictionary<Guid, float> invalidControllerTimers = new Dictionary<Guid, float>();
-        private bool controllerListDirty = true;
+        protected override bool IsModuleEnabled { get { return RoverDustConfig.EnableDust; } }
+        protected override bool IsDebugLogging { get { return RoverDustConfig.DebugLogging; } }
 
-        private float controllerRefreshTimer;
-        private float settingsRefreshTimer;
-        private float debugHeartbeatTimer;
-        private bool emittersStoppedWhileDisabled;
-
-        private const float ControllerRefreshInterval = 1.0f;
-        private const float SettingsRefreshInterval = 0.5f;
-        private const float ControllerInvalidGraceSeconds = 4.0f;
-        private const float HeartbeatInterval = 2.5f;
-
-        private void Start()
+        protected override void RefreshSettings()
         {
-            RoverDustConfig.Refresh();
-            RoverDustRuntimeConfig.Refresh();
-            RefreshControllers(0f);
-            controllerRefreshTimer = ControllerRefreshInterval;
-            RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogBootstrapStart));
-        }
-
-        private void Update()
-        {
-            if (!HighLogic.LoadedSceneIsFlight)
-                return;
-
-            float dt = Time.deltaTime;
-            RefreshSettingsIfNeeded(dt);
-
-            if (!RoverDustConfig.EnableDust)
-            {
-                if (!emittersStoppedWhileDisabled)
-                {
-                    StopAllEmitters();
-                    emittersStoppedWhileDisabled = true;
-                }
-                return;
-            }
-
-            emittersStoppedWhileDisabled = false;
-            RefreshControllersIfNeeded(dt);
-            TickControllers(dt);
-            LogHeartbeatIfNeeded(dt);
-        }
-
-        private void RefreshSettingsIfNeeded(float dt)
-        {
-            settingsRefreshTimer -= dt;
-            if (settingsRefreshTimer > 0f)
-                return;
-            settingsRefreshTimer = SettingsRefreshInterval;
             RoverDustConfig.Refresh();
             RoverDustRuntimeConfig.TryHotReloadFromDisk();
         }
 
-        private void RefreshControllersIfNeeded(float dt)
+        protected override void OnBeforeStart()
         {
-            controllerRefreshTimer -= dt;
-            if (controllerRefreshTimer > 0f)
-                return;
-            float refreshElapsed = ControllerRefreshInterval - controllerRefreshTimer;
-            controllerRefreshTimer = ControllerRefreshInterval;
-            RefreshControllers(Mathf.Max(0f, refreshElapsed));
+            RoverDustRuntimeConfig.Refresh();
         }
 
-        private void TickControllers(float dt)
-        {
-            if (controllerListDirty)
-            {
-                controllerListDirty = false;
-                controllerList.Clear();
-                var e = controllers.GetEnumerator();
-                while (e.MoveNext())
-                    controllerList.Add(e.Current.Value);
-                e.Dispose();
-            }
-            for (int i = 0; i < controllerList.Count; i++)
-                controllerList[i].Tick(dt);
-        }
-
-        private void LogHeartbeatIfNeeded(float dt)
-        {
-            if (!RoverDustConfig.DebugLogging)
-                return;
-            debugHeartbeatTimer -= dt;
-            if (debugHeartbeatTimer > 0f)
-                return;
-            debugHeartbeatTimer = HeartbeatInterval;
-            RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogHeartbeat, controllers.Count));
-        }
-
-        private void RefreshControllers(float refreshElapsed)
-        {
-            RemoveInvalidControllers(refreshElapsed);
-            AttachOrRefreshLoadedVessels();
-        }
-
-        private void RemoveInvalidControllers(float refreshElapsed)
-        {
-            removeControllerIds.Clear();
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-            {
-                if (!e.Current.Value.IsStillValid())
-                {
-                    float invalidTimer;
-                    invalidControllerTimers.TryGetValue(e.Current.Key, out invalidTimer);
-                    invalidTimer += refreshElapsed;
-                    invalidControllerTimers[e.Current.Key] = invalidTimer;
-
-                    if (invalidTimer >= ControllerInvalidGraceSeconds)
-                    {
-                        e.Current.Value.Dispose();
-                        removeControllerIds.Add(e.Current.Key);
-                    }
-                }
-                else
-                {
-                    invalidControllerTimers.Remove(e.Current.Key);
-                }
-            }
-            e.Dispose();
-            for (int i = 0; i < removeControllerIds.Count; i++)
-                RemoveController(removeControllerIds[i]);
-            if (removeControllerIds.Count > 0)
-                controllerListDirty = true;
-        }
-
-        private void RemoveController(Guid vesselId)
-        {
-            controllers.Remove(vesselId);
-            invalidControllerTimers.Remove(vesselId);
-            controllerListDirty = true;
-        }
-
-        private void AttachOrRefreshLoadedVessels()
-        {
-            List<Vessel> loaded = FlightGlobals.VesselsLoaded;
-            if (loaded == null)
-                return;
-            for (int i = 0; i < loaded.Count; i++)
-            {
-                Vessel vessel = loaded[i];
-                if (!IsSupportedVessel(vessel))
-                    continue;
-
-                VesselDustController controller;
-                if (controllers.TryGetValue(vessel.id, out controller))
-                    controller.TryRebuild();
-                else
-                    TryAttachController(vessel);
-            }
-        }
-
-        private void TryAttachController(Vessel vessel)
-        {
-            VesselDustController controller = new VesselDustController(vessel);
-            if (!controller.HasEmitters)
-            {
-                controller.Dispose();
-                return;
-            }
-            controllers.Add(vessel.id, controller);
-            invalidControllerTimers.Remove(vessel.id);
-            controllerListDirty = true;
-            RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogAttached, controller.EmitterCount, vessel.vesselName));
-        }
-
-        private static bool IsSupportedVessel(Vessel vessel)
+        protected override bool IsSupportedVessel(Vessel vessel)
         {
             return KerbalFxVesselUtil.IsSupportedFlightVessel(vessel);
         }
 
-        private void StopAllEmitters()
+        protected override VesselDustController CreateController(Vessel vessel)
         {
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-                e.Current.Value.StopAll();
-            e.Dispose();
+            return new VesselDustController(vessel);
         }
 
-        private void OnDestroy()
+        protected override bool ControllerHasEmitters(VesselDustController controller)
         {
-            var e = controllers.GetEnumerator();
-            while (e.MoveNext())
-                e.Current.Value.Dispose();
-            e.Dispose();
-            controllers.Clear();
-            controllerList.Clear();
-            controllerListDirty = true;
-            invalidControllerTimers.Clear();
+            return controller.HasEmitters;
+        }
+
+        protected override int ControllerEmitterCount(VesselDustController controller)
+        {
+            return controller.EmitterCount;
+        }
+
+        protected override void TryRebuildController(VesselDustController controller, float refreshElapsed)
+        {
+            controller.TryRebuild();
+        }
+
+        protected override void LogBootstrapStart()
+        {
+            RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogBootstrapStart));
+        }
+
+        protected override void LogBootstrapStop()
+        {
             RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogBootstrapStop));
+        }
+
+        protected override void LogHeartbeat(int controllerCount)
+        {
+            RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogHeartbeat, controllerCount));
+        }
+
+        protected override void LogAttached(int emitterCount, string vesselName)
+        {
+            RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogAttached, emitterCount, vesselName));
         }
     }
 
-    internal sealed class VesselDustController
+    internal sealed class VesselDustController : IVesselFxController
     {
         private readonly Vessel vessel;
         private readonly List<WheelDustEmitter> emitters = new List<WheelDustEmitter>();
-        private int cachedPartCount = -1;
-        private uint cachedPartSignature;
+        private KerbalFxVesselPartSnapshot partSnapshot;
 
         public int EmitterCount { get { return emitters.Count; } }
         public bool HasEmitters { get { return emitters.Count > 0; } }
@@ -456,14 +290,8 @@ namespace KerbalFX.RoverDust
         {
             if (vessel == null || vessel.parts == null)
                 return;
-            int count = vessel.parts.Count;
-            if (count != cachedPartCount)
-            {
-                RebuildEmitters();
-                return;
-            }
-            uint sig = KerbalFxUtil.ComputeVesselPartSignature(vessel);
-            if (sig != cachedPartSignature)
+
+            if (partSnapshot.HasChanged(vessel))
                 RebuildEmitters();
         }
 
@@ -503,8 +331,7 @@ namespace KerbalFX.RoverDust
         private void RebuildEmitters()
         {
             DisposeEmitters();
-            cachedPartCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
-            cachedPartSignature = vessel != null ? KerbalFxUtil.ComputeVesselPartSignature(vessel) : 0u;
+            partSnapshot.Capture(vessel);
             if (vessel == null || vessel.parts == null)
                 return;
 

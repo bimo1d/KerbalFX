@@ -14,6 +14,8 @@ namespace KerbalFX.ImpactPuffs
 
         public const string UiEnable = "#LOC_KerbalFX_ImpactPuffs_UI_Enable";
         public const string UiEnableTip = "#LOC_KerbalFX_ImpactPuffs_UI_Enable_TT";
+        public const string UiQualityScale = "#LOC_KerbalFX_ImpactPuffs_UI_QualityScale";
+        public const string UiQualityScaleTip = "#LOC_KerbalFX_ImpactPuffs_UI_QualityScale_TT";
         public const string UiLightAware = "#LOC_KerbalFX_ImpactPuffs_UI_LightAware";
         public const string UiLightAwareTip = "#LOC_KerbalFX_ImpactPuffs_UI_LightAware_TT";
         public const string UiDebug = "#LOC_KerbalFX_ImpactPuffs_UI_Debug";
@@ -37,6 +39,16 @@ namespace KerbalFX.ImpactPuffs
     {
         [GameParameters.CustomParameterUI(ImpactPuffsLoc.UiEnable, toolTip = ImpactPuffsLoc.UiEnableTip)]
         public bool enableImpactPuffs = true;
+
+        [GameParameters.CustomIntParameterUI(
+            ImpactPuffsLoc.UiQualityScale,
+            toolTip = ImpactPuffsLoc.UiQualityScaleTip,
+            minValue = 25,
+            maxValue = 200,
+            stepSize = 25,
+            displayFormat = "N0"
+        )]
+        public int qualityScale = 100;
 
         [GameParameters.CustomParameterUI(ImpactPuffsLoc.UiLightAware, toolTip = ImpactPuffsLoc.UiLightAwareTip)]
         public bool useLightAware = true;
@@ -80,6 +92,7 @@ namespace KerbalFX.ImpactPuffs
         public static bool Enabled = true;
         public static bool UseLightAware = true;
         public static bool DebugLogging;
+        public static int QualityPercent = 100;
         public static int Revision;
 
         private static bool initialized;
@@ -89,6 +102,7 @@ namespace KerbalFX.ImpactPuffs
             bool newEnabled = true;
             bool newUseLightAware = true;
             bool newDebug = false;
+            int newQualityPercent = 100;
 
             if (HighLogic.CurrentGame != null && HighLogic.CurrentGame.Parameters != null)
             {
@@ -98,17 +112,20 @@ namespace KerbalFX.ImpactPuffs
                     newEnabled = p.enableImpactPuffs;
                     newUseLightAware = p.useLightAware;
                     newDebug = p.debugLogging;
+                    newQualityPercent = Mathf.Clamp(p.qualityScale, 25, 200);
                 }
             }
 
             bool changed = !initialized
                 || newEnabled != Enabled
                 || newUseLightAware != UseLightAware
-                || newDebug != DebugLogging;
+                || newDebug != DebugLogging
+                || newQualityPercent != QualityPercent;
 
             Enabled = newEnabled;
             UseLightAware = newUseLightAware;
             DebugLogging = newDebug;
+            QualityPercent = newQualityPercent;
 
             if (changed)
             {
@@ -117,10 +134,22 @@ namespace KerbalFX.ImpactPuffs
                 ImpactPuffsLog.Info(Localizer.Format(
                     ImpactPuffsLoc.LogSettingsUpdated,
                     Enabled,
+                    QualityPercent,
                     UseLightAware,
                     DebugLogging
                 ));
             }
+        }
+
+        public static float GetQualityScaleMultiplier()
+        {
+            int quality = Mathf.Clamp(QualityPercent, 25, 200);
+            if (quality <= 100)
+            {
+                return quality / 100f;
+            }
+
+            return Mathf.Lerp(1f, 1.5f, (quality - 100f) / 100f);
         }
     }
 
@@ -156,82 +185,38 @@ namespace KerbalFX.ImpactPuffs
         public const float TouchdownMinSpeed = 2.2f;
         public const float TouchdownBurstMultiplier = 3.00f;
 
-        private static readonly Dictionary<string, float> BodyVisibilityMultipliers = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
-        private static DateTime lastConfigWriteUtc = DateTime.MinValue;
+        private static readonly KerbalFxBodyVisibilityProfile bodyProfile =
+            new KerbalFxBodyVisibilityProfile("KERBALFX_IMPACT_PUFFS", GetConfigPath, SeedDefaultBodyVisibility, 0.40f, 3.00f);
 
         public static void Refresh()
         {
-            SeedDefaultBodyVisibility();
-
-            if (GameDatabase.Instance != null)
-            {
-                ConfigNode[] nodes = GameDatabase.Instance.GetConfigNodes("KERBALFX_IMPACT_PUFFS");
-                if (nodes != null)
-                {
-                    for (int i = 0; i < nodes.Length; i++)
-                    {
-                        if (nodes[i] != null)
-                        {
-                            KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.40f, 3.00f);
-                        }
-                    }
-                }
-            }
-
-            KerbalFxUtil.PrimeConfigFileStamp(GetConfigPath(), ref lastConfigWriteUtc);
+            bodyProfile.Refresh();
             Revision++;
             ImpactPuffsLog.Info(Localizer.Format(
                 ImpactPuffsLoc.LogConfig,
                 "GameDatabase",
-                "BodyVisibilityEntries=" + BodyVisibilityMultipliers.Count.ToString(CultureInfo.InvariantCulture)));
+                "BodyVisibilityEntries=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)));
         }
 
         public static void TryHotReloadFromDisk()
         {
-            if (!KerbalFxUtil.HasConfigFileChanged(GetConfigPath(), ref lastConfigWriteUtc))
-            {
+            string failure;
+            if (!bodyProfile.TryHotReloadFromDisk(out failure))
                 return;
-            }
 
-            SeedDefaultBodyVisibility();
-
-            try
-            {
-                string path = GetConfigPath();
-                if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                {
-                    ConfigNode root = ConfigNode.Load(path);
-                    if (root != null)
-                    {
-                        ConfigNode[] nodes = root.GetNodes("KERBALFX_IMPACT_PUFFS");
-                        if (nodes != null)
-                        {
-                            for (int i = 0; i < nodes.Length; i++)
-                            {
-                                if (nodes[i] != null)
-                                {
-                                    KerbalFxUtil.LoadBodyVisibility(nodes[i], BodyVisibilityMultipliers, 0.40f, 3.00f);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                ImpactPuffsLog.Info(Localizer.Format(ImpactPuffsLoc.LogHotReloadFailed, ex.Message));
-            }
+            if (failure != null)
+                ImpactPuffsLog.Info(Localizer.Format(ImpactPuffsLoc.LogHotReloadFailed, failure));
 
             Revision++;
             ImpactPuffsLog.Info(Localizer.Format(
                 ImpactPuffsLoc.LogConfig,
                 "HotReload",
-                "BodyVisibilityEntries=" + BodyVisibilityMultipliers.Count.ToString(CultureInfo.InvariantCulture)));
+                "BodyVisibilityEntries=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)));
         }
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
-            return KerbalFxVesselUtil.GetBodyVisibilityMultiplier(bodyName, BodyVisibilityMultipliers, 0.40f, 3.00f);
+            return bodyProfile.Get(bodyName);
         }
 
         private static string GetConfigPath()
@@ -239,38 +224,28 @@ namespace KerbalFX.ImpactPuffs
             return Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KerbalFX", "ImpactPuffs", "KerbalFX_ImpactPuffs.cfg");
         }
 
-        private static void SeedDefaultBodyVisibility()
+        private static void SeedDefaultBodyVisibility(Dictionary<string, float> dict)
         {
-            BodyVisibilityMultipliers.Clear();
-            BodyVisibilityMultipliers["Kerbin"] = 1.00f;
-            BodyVisibilityMultipliers["Mun"] = 1.22f;
-            BodyVisibilityMultipliers["Minmus"] = 1.18f;
-            BodyVisibilityMultipliers["Duna"] = 1.00f;
-            BodyVisibilityMultipliers["Ike"] = 1.06f;
-            BodyVisibilityMultipliers["Eve"] = 1.08f;
-            BodyVisibilityMultipliers["Moho"] = 1.10f;
-            BodyVisibilityMultipliers["Dres"] = 1.06f;
-            BodyVisibilityMultipliers["Vall"] = 1.06f;
-            BodyVisibilityMultipliers["Tylo"] = 1.00f;
-            BodyVisibilityMultipliers["Bop"] = 1.08f;
-            BodyVisibilityMultipliers["Pol"] = 1.08f;
-            BodyVisibilityMultipliers["Eeloo"] = 1.12f;
+            dict["Kerbin"] = 1.00f;
+            dict["Mun"] = 1.22f;
+            dict["Minmus"] = 1.18f;
+            dict["Duna"] = 1.00f;
+            dict["Ike"] = 1.06f;
+            dict["Eve"] = 1.08f;
+            dict["Moho"] = 1.10f;
+            dict["Dres"] = 1.06f;
+            dict["Vall"] = 1.06f;
+            dict["Tylo"] = 1.00f;
+            dict["Bop"] = 1.08f;
+            dict["Pol"] = 1.08f;
+            dict["Eeloo"] = 1.12f;
         }
     }
 
     internal static class ImpactPuffsLog
     {
-        public static void Info(string message)
-        {
-            Debug.Log("[KerbalFX] " + message);
-        }
-
-        public static void DebugLog(string message)
-        {
-            if (ImpactPuffsConfig.DebugLogging)
-            {
-                Debug.Log("[KerbalFX] " + message);
-            }
-        }
+        private static readonly KerbalFxLog impl = new KerbalFxLog(() => ImpactPuffsConfig.DebugLogging);
+        public static void Info(string message) { impl.Info(message); }
+        public static void DebugLog(string message) { impl.DebugLog(message); }
     }
 }

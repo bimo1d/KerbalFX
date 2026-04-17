@@ -6,11 +6,11 @@ using UnityEngine;
 
 namespace KerbalFX.ImpactPuffs
 {
-    internal sealed class EngineGroundPuffEmitter
+    internal sealed partial class EngineGroundPuffEmitter
     {
         private readonly Part part;
         private readonly ModuleEngines engine;
-        private readonly Transform thrustTransform;
+        private readonly List<Transform> thrustTransforms;
         private readonly GameObject root;
         private readonly ParticleSystem particleSystem;
         private readonly VolumetricPlumeField volumetricField;
@@ -30,8 +30,7 @@ namespace KerbalFX.ImpactPuffs
         private float ignitionPrimeTimer;
         private bool wasEngineIgnited;
 
-        private int appliedUiRevision = -1;
-        private int appliedRuntimeRevision = -1;
+        private KerbalFxRevisionStamp appliedProfileRevision;
         private int engineClusterCount = 1;
 
         private Color currentColor = new Color(0.72f, 0.68f, 0.61f, 1f);
@@ -124,18 +123,18 @@ namespace KerbalFX.ImpactPuffs
             }
         }
 
-        public EngineGroundPuffEmitter(Part part, ModuleEngines engine, Transform thrustTransform)
+        public EngineGroundPuffEmitter(Part part, ModuleEngines engine, List<Transform> thrustTransforms)
         {
             this.part = part;
             this.engine = engine;
-            this.thrustTransform = thrustTransform;
+            this.thrustTransforms = CopyValidTransforms(thrustTransforms);
 
-            string transformName = thrustTransform != null ? thrustTransform.name : "part";
+            string transformName = GetDebugTransformName(this.thrustTransforms);
             debugId = (part.partInfo != null ? part.partInfo.name : part.name) + ":" + transformName;
 
             root = new GameObject("KerbalFX_EngineGroundPuff");
             root.transform.SetParent(null, false);
-            root.transform.position = part.transform.position;
+            root.transform.position = GetThrustOrigin();
             root.layer = part.gameObject.layer;
 
             particleSystem = root.AddComponent<ParticleSystem>();
@@ -250,6 +249,7 @@ namespace KerbalFX.ImpactPuffs
                     targetRate,
                     pressure,
                     qualityNorm,
+                    ImpactPuffsConfig.GetQualityScaleMultiplier(),
                     currentColor,
                     cachedLightFactor,
                     lastCenteredness,
@@ -378,8 +378,8 @@ namespace KerbalFX.ImpactPuffs
                 return false;
             }
 
-            Vector3 origin = thrustTransform != null ? thrustTransform.position : part.transform.position;
-            exhaustDirection = GetPrimaryExhaustDirection(origin);
+            Vector3 origin = GetThrustOrigin();
+            exhaustDirection = GetPrimaryExhaustDirection();
 
             Vector3 bodyDown = Vector3.down;
             if (vessel != null && vessel.mainBody != null)
@@ -483,6 +483,7 @@ namespace KerbalFX.ImpactPuffs
             float baseRate = (1320f + 14800f * pressure * pressure) * Mathf.Lerp(0.42f, 1.36f, distanceFactor);
             float engineClusterScale = ComputeEngineClusterScale(engineClusterCount);
             float modeDensityScale = 1.10f;
+            float qualityScale = ImpactPuffsConfig.GetQualityScaleMultiplier();
 
             float targetRate = baseRate
                 * qualityRateScale
@@ -491,10 +492,11 @@ namespace KerbalFX.ImpactPuffs
                 * ImpactPuffsRuntimeConfig.EmissionMultiplier
                 * ImpactPuffsRuntimeConfig.SharedEmissionMultiplier
                 * cachedBodyVisibility
-                * modeDensityScale;
+                * modeDensityScale
+                * qualityScale;
 
             targetRate *= 1.42f;
-            float rateCap = engineClusterCount > 1 ? MaxTargetRateMulti : MaxTargetRateSingle;
+            float rateCap = (engineClusterCount > 1 ? MaxTargetRateMulti : MaxTargetRateSingle) * qualityScale;
             return Mathf.Clamp(targetRate, 0f, rateCap);
         }
 
@@ -589,8 +591,7 @@ namespace KerbalFX.ImpactPuffs
         {
             profileRefreshTimer -= dt;
             if (profileRefreshTimer <= 0f
-                || appliedUiRevision != ImpactPuffsConfig.Revision
-                || appliedRuntimeRevision != ImpactPuffsRuntimeConfig.Revision)
+                || appliedProfileRevision.NeedsApply(ImpactPuffsConfig.Revision, ImpactPuffsRuntimeConfig.Revision))
             {
                 profileRefreshTimer = ProfileRefreshInterval;
                 ApplyRuntimeVisualProfile(false);
@@ -769,16 +770,7 @@ namespace KerbalFX.ImpactPuffs
                 return;
             }
 
-            if (thrustTransform != null)
-            {
-                root.transform.position = thrustTransform.position;
-                return;
-            }
-
-            if (part != null && part.transform != null)
-            {
-                root.transform.position = part.transform.position;
-            }
+            root.transform.position = GetThrustOrigin();
         }
 
         private void LogLaunchsiteSuppression(string reason, Vessel vessel, Collider collider, float dt)
@@ -856,18 +848,16 @@ namespace KerbalFX.ImpactPuffs
 
         private void ApplyRuntimeVisualProfile(bool force)
         {
-            if (!force
-                && appliedUiRevision == ImpactPuffsConfig.Revision
-                && appliedRuntimeRevision == ImpactPuffsRuntimeConfig.Revision)
+            if (appliedProfileRevision.ShouldSkipApply(force, ImpactPuffsConfig.Revision, ImpactPuffsRuntimeConfig.Revision))
             {
                 return;
             }
 
-            appliedUiRevision = ImpactPuffsConfig.Revision;
-            appliedRuntimeRevision = ImpactPuffsRuntimeConfig.Revision;
+            appliedProfileRevision.MarkApplied(ImpactPuffsConfig.Revision, ImpactPuffsRuntimeConfig.Revision);
 
             float quality = GetModeQualityScale();
             float qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
+            float qualityScale = ImpactPuffsConfig.GetQualityScaleMultiplier();
             float volumetricBoost = 1.30f;
 
             ParticleSystem.MainModule main = particleSystem.main;
@@ -875,8 +865,9 @@ namespace KerbalFX.ImpactPuffs
                 * (1f + (Mathf.Pow(quality, 1.25f) - 1f) * 1.15f)
                 * volumetricBoost
                 * ImpactPuffsRuntimeConfig.MaxParticlesMultiplier
-                * ImpactPuffsRuntimeConfig.SharedMaxParticlesMultiplier;
-            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticles, 480f, 22000f));
+                * ImpactPuffsRuntimeConfig.SharedMaxParticlesMultiplier
+                * qualityScale;
+            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticles, 480f, Mathf.Max(480f, 22000f * qualityScale)));
 
             float minSize = 0.22f * Mathf.Lerp(0.72f, 1.70f, qualityNorm) * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier * ImpactPuffsRuntimeConfig.SharedRadiusScaleMultiplier;
             float maxSize = 0.72f * Mathf.Lerp(0.72f, 1.70f, qualityNorm) * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier * ImpactPuffsRuntimeConfig.SharedRadiusScaleMultiplier;
@@ -1059,40 +1050,25 @@ namespace KerbalFX.ImpactPuffs
             }
         }
 
-        private Vector3 GetPrimaryExhaustDirection(Vector3 origin)
+        private Vector3 GetPrimaryExhaustDirection()
         {
-            if (thrustTransform != null)
+            if (thrustTransforms != null && thrustTransforms.Count > 0)
             {
-                Vector3 dirA = -thrustTransform.forward;
-                Vector3 dirB = thrustTransform.forward;
-                if (dirA.sqrMagnitude > 0.0001f && dirB.sqrMagnitude > 0.0001f)
+                Vector3 average = Vector3.zero;
+                for (int i = 0; i < thrustTransforms.Count; i++)
                 {
-                    dirA.Normalize();
-                    dirB.Normalize();
-
-                    float scoreA = 0f;
-                    float scoreB = 0f;
-
-                    if (part != null && part.transform != null)
+                    Transform transform = thrustTransforms[i];
+                    if (transform == null)
                     {
-                        Vector3 fromPartCenter = origin - part.transform.position;
-                        if (fromPartCenter.sqrMagnitude > 0.0001f)
-                        {
-                            fromPartCenter.Normalize();
-                            scoreA += Vector3.Dot(dirA, fromPartCenter) * 1.45f;
-                            scoreB += Vector3.Dot(dirB, fromPartCenter) * 1.45f;
-                        }
-
-                        Vector3 partDown = -part.transform.up;
-                        if (partDown.sqrMagnitude > 0.0001f)
-                        {
-                            partDown.Normalize();
-                            scoreA += Vector3.Dot(dirA, partDown) * 0.85f;
-                            scoreB += Vector3.Dot(dirB, partDown) * 0.85f;
-                        }
+                        continue;
                     }
 
-                    return scoreB > scoreA ? dirB : dirA;
+                    average += GetTransformExhaustDirection(transform);
+                }
+
+                if (average.sqrMagnitude > 0.0001f)
+                {
+                    return average.normalized;
                 }
             }
 
@@ -1108,171 +1084,108 @@ namespace KerbalFX.ImpactPuffs
             return Vector3.down;
         }
 
-        private static bool TryFindGroundHit(
-            Vector3 origin,
-            Vector3 primaryDir,
-            Vessel vessel,
-            float maxDistance,
-            out RaycastHit hit,
-            out int rawHitCount,
-            out int rigidbodySkipped,
-            out int partSkipped,
-            out int normalSkipped)
+        private Vector3 GetTransformExhaustDirection(Transform transform)
         {
-            hit = new RaycastHit();
-            rawHitCount = 0;
-            rigidbodySkipped = 0;
-            partSkipped = 0;
-            normalSkipped = 0;
-            if (primaryDir.sqrMagnitude < 0.0001f)
+            Vector3 dirA = -transform.forward;
+            Vector3 dirB = transform.forward;
+            if (dirA.sqrMagnitude <= 0.0001f || dirB.sqrMagnitude <= 0.0001f)
             {
-                return false;
+                return Vector3.down;
             }
 
-            Vector3 primary = primaryDir.normalized;
+            dirA.Normalize();
+            dirB.Normalize();
 
-            Vector3 bodyDown = Vector3.down;
-            if (vessel != null && vessel.mainBody != null)
+            float scoreA = 0f;
+            float scoreB = 0f;
+
+            if (part != null && part.transform != null)
             {
-                Vector3 toBody = vessel.mainBody.position - origin;
-                if (toBody.sqrMagnitude > 0.0001f)
+                Vector3 fromPartCenter = transform.position - part.transform.position;
+                if (fromPartCenter.sqrMagnitude > 0.0001f)
                 {
-                    bodyDown = toBody.normalized;
+                    fromPartCenter.Normalize();
+                    scoreA += Vector3.Dot(dirA, fromPartCenter) * 1.45f;
+                    scoreB += Vector3.Dot(dirB, fromPartCenter) * 1.45f;
+                }
+
+                Vector3 partDown = -part.transform.up;
+                if (partDown.sqrMagnitude > 0.0001f)
+                {
+                    partDown.Normalize();
+                    scoreA += Vector3.Dot(dirA, partDown) * 0.85f;
+                    scoreB += Vector3.Dot(dirB, partDown) * 0.85f;
                 }
             }
 
-            float dotPrimary = Vector3.Dot(primary, bodyDown);
-            float minDot = ImpactPuffsRuntimeConfig.MinRayDirectionToBodyDown;
-
-            bool allowPrimary = dotPrimary >= minDot;
-            if (!allowPrimary)
-            {
-                return false;
-            }
-
-            RaycastHit primaryHit;
-            if (!TryRay(origin, primary, vessel, maxDistance, out primaryHit, out rawHitCount, out rigidbodySkipped, out partSkipped, out normalSkipped))
-            {
-                return false;
-            }
-
-            hit = primaryHit;
-            return true;
+            return scoreB > scoreA ? dirB : dirA;
         }
 
-        private static bool TryRay(
-            Vector3 origin,
-            Vector3 direction,
-            Vessel vessel,
-            float maxDistance,
-            out RaycastHit bestHit,
-            out int rawHitCount,
-            out int rigidbodySkipped,
-            out int partSkipped,
-            out int normalSkipped)
+        private Vector3 GetThrustOrigin()
         {
-            bestHit = new RaycastHit();
-            rawHitCount = 0;
-            rigidbodySkipped = 0;
-            partSkipped = 0;
-            normalSkipped = 0;
-            if (direction.sqrMagnitude < 0.0001f)
+            if (thrustTransforms != null && thrustTransforms.Count > 0)
             {
-                return false;
-            }
-
-            int hitCount = Physics.RaycastNonAlloc(
-                origin,
-                direction.normalized,
-                SharedHits,
-                maxDistance,
-                TerrainRaycastMask,
-                QueryTriggerInteraction.Ignore
-            );
-            rawHitCount = hitCount;
-
-            if (hitCount <= 0)
-            {
-                return false;
-            }
-
-            float bestDistance = float.MaxValue;
-            bool found = false;
-
-            for (int i = 0; i < hitCount; i++)
-            {
-                RaycastHit candidate = SharedHits[i];
-                if (candidate.collider == null)
+                Vector3 sum = Vector3.zero;
+                int validCount = 0;
+                for (int i = 0; i < thrustTransforms.Count; i++)
                 {
-                    continue;
-                }
-
-                Rigidbody hitBody = candidate.rigidbody != null ? candidate.rigidbody : candidate.collider.attachedRigidbody;
-                if (hitBody != null)
-                {
-                    rigidbodySkipped++;
-                    continue;
-                }
-
-                Part hitPart = candidate.collider.GetComponentInParent<Part>();
-                if (hitPart != null)
-                {
-                    partSkipped++;
-                    continue;
-                }
-
-                if (vessel != null && vessel.mainBody != null)
-                {
-                    Vector3 upFromBody = candidate.point - vessel.mainBody.position;
-                    if (upFromBody.sqrMagnitude > 0.0001f)
+                    Transform transform = thrustTransforms[i];
+                    if (transform == null)
                     {
-                        upFromBody.Normalize();
-                        Vector3 hitNormal = candidate.normal.sqrMagnitude > 0.0001f ? candidate.normal.normalized : upFromBody;
-                        float normalToUp = Vector3.Dot(hitNormal, upFromBody);
-                        if (normalToUp < 0.30f)
-                        {
-                            normalSkipped++;
-                            continue;
-                        }
+                        continue;
                     }
+
+                    sum += transform.position;
+                    validCount++;
                 }
 
-                if (candidate.distance < bestDistance)
+                if (validCount > 0)
                 {
-                    bestDistance = candidate.distance;
-                    bestHit = candidate;
-                    found = true;
+                    return sum / validCount;
                 }
             }
 
-            return found;
+            if (part != null && part.transform != null)
+            {
+                return part.transform.position;
+            }
+
+            return Vector3.zero;
         }
 
-        private static float GetSafeTerrainHeightAgl(Vessel vessel)
+        private static List<Transform> CopyValidTransforms(List<Transform> source)
         {
-            if (vessel == null)
+            if (source == null || source.Count == 0)
             {
-                return -1f;
+                return null;
             }
 
-            double agl = vessel.heightFromTerrain;
-            if (!double.IsNaN(agl) && !double.IsInfinity(agl) && agl >= 0.0)
+            List<Transform> copy = new List<Transform>(source.Count);
+            for (int i = 0; i < source.Count; i++)
             {
-                return (float)agl;
+                if (source[i] != null)
+                {
+                    copy.Add(source[i]);
+                }
             }
 
-            double radar = vessel.radarAltitude;
-            if (!double.IsNaN(radar) && !double.IsInfinity(radar) && radar >= 0.0)
+            return copy.Count > 0 ? copy : null;
+        }
+
+        private static string GetDebugTransformName(List<Transform> transforms)
+        {
+            if (transforms == null || transforms.Count == 0)
             {
-                return (float)radar;
+                return "part";
             }
 
-            if (vessel.Landed || vessel.situation == Vessel.Situations.PRELAUNCH)
+            if (transforms.Count == 1)
             {
-                return 0f;
+                return transforms[0] != null ? transforms[0].name : "part";
             }
 
-            return -1f;
+            string firstName = transforms[0] != null ? transforms[0].name : "thrustTransform";
+            return firstName + "x" + transforms.Count.ToString(CultureInfo.InvariantCulture);
         }
 
         internal static float GetModeQualityScale()
@@ -1318,99 +1231,6 @@ namespace KerbalFX.ImpactPuffs
             return Mathf.Clamp(scale, ImpactPuffsRuntimeConfig.EngineCountMinScale, 1f);
         }
 
-        internal static bool IsLaunchsiteExcludedSurface(Collider collider)
-        {
-            if (collider == null || collider.transform == null)
-            {
-                return false;
-            }
-
-            Transform cursor = collider.transform;
-            int depth = 0;
-            while (cursor != null && depth < 6)
-            {
-                if (KerbalFxUtil.ContainsAnyToken(cursor.name, LaunchsiteSurfaceTokens))
-                {
-                    return true;
-                }
-
-                GameObject go = cursor.gameObject;
-                if (go != null && KerbalFxUtil.ContainsAnyToken(go.name, LaunchsiteSurfaceTokens))
-                {
-                    return true;
-                }
-
-                cursor = cursor.parent;
-                depth++;
-            }
-
-            return false;
-        }
-
-        internal static bool IsInKerbinLaunchsiteZone(Vessel vessel)
-        {
-            if (vessel == null || vessel.mainBody == null)
-            {
-                return false;
-            }
-
-            if (!string.Equals(vessel.mainBody.bodyName, "Kerbin", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            if (vessel.altitude > 3500.0)
-            {
-                return false;
-            }
-
-            double lat = vessel.latitude;
-            double lon = NormalizeLongitudeSigned(vessel.longitude);
-
-            return lat >= -0.28 && lat <= 0.18 && lon >= -74.95 && lon <= -74.20;
-        }
-
-        private static double NormalizeLongitudeSigned(double lon)
-        {
-            while (lon > 180.0)
-            {
-                lon -= 360.0;
-            }
-            while (lon < -180.0)
-            {
-                lon += 360.0;
-            }
-            return lon;
-        }
-
-        private static string GetSurfaceNameChain(Collider collider, int depth)
-        {
-            if (collider == null)
-            {
-                return string.Empty;
-            }
-
-            System.Text.StringBuilder sb = new System.Text.StringBuilder(128);
-            Transform cursor = collider.transform;
-            int remaining = Mathf.Max(1, depth);
-            while (cursor != null && remaining > 0)
-            {
-                if (!string.IsNullOrEmpty(cursor.name))
-                {
-                    if (sb.Length > 0)
-                    {
-                        sb.Append('/');
-                    }
-                    sb.Append(cursor.name.ToLowerInvariant());
-                }
-
-                cursor = cursor.parent;
-                remaining--;
-            }
-
-            return sb.ToString();
-        }
-
         private void UpdateSurfaceColor(Vessel vessel, Collider collider)
         {
             Color bodyColor = KerbalFxSurfaceColor.GetBaseDustColor(vessel);
@@ -1445,152 +1265,6 @@ namespace KerbalFX.ImpactPuffs
             main.startColor = new Color(currentColor.r, currentColor.g, currentColor.b, alpha);
         }
 
-        private static float EvaluateVolumetricLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, float normalizedThrust)
-        {
-            if (!ImpactPuffsConfig.UseLightAware)
-            {
-                return 1f;
-            }
-
-            float sunLight = EvaluateSunLighting(vessel, worldPoint, surfaceNormal, true);
-            float thrust01 = Mathf.Clamp01(normalizedThrust);
-            float engineGlow = Mathf.Lerp(0.0f, 0.020f, Mathf.Pow(thrust01, 2.20f));
-            return Mathf.Clamp01(Mathf.Max(sunLight, engineGlow));
-        }
-
-        internal static float GetSunLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
-        {
-            if (!ImpactPuffsConfig.UseLightAware)
-                return 1f;
-            return EvaluateSunLighting(vessel, worldPoint, surfaceNormal, false);
-        }
-
-        internal static float GetTouchdownLightFactor(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
-        {
-            if (!ImpactPuffsConfig.UseLightAware)
-                return 1f;
-            return EvaluateSunLighting(vessel, worldPoint, surfaceNormal, true);
-        }
-
-        private static float EvaluateSunLighting(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, bool includeTerrainOcclusion)
-        {
-            if (surfaceNormal.sqrMagnitude < 0.0001f)
-                surfaceNormal = Vector3.up;
-            surfaceNormal.Normalize();
-
-            Vector3 sunDirection;
-            if (!KerbalFxSunLight.TryGetSunDirection(worldPoint, out sunDirection))
-                return 0f;
-
-            float ndotl = Mathf.Clamp01(Vector3.Dot(surfaceNormal, sunDirection));
-            if (ndotl <= 0f)
-                return 0f;
-
-            float litFactor = Mathf.Lerp(0.05f, 1f, Mathf.Pow(ndotl, 0.58f));
-
-            bool bodyOccluded = vessel != null
-                && vessel.mainBody != null
-                && KerbalFxSunLight.IsSunOccludedByBody(vessel.mainBody, worldPoint, sunDirection);
-            bool terrainOccluded = includeTerrainOcclusion
-                && !bodyOccluded
-                && IsLocallySunOccluded(vessel, worldPoint, surfaceNormal, sunDirection);
-
-            if (!bodyOccluded && !terrainOccluded)
-                return Mathf.Clamp01(litFactor);
-
-            float shadowStrength = Mathf.Clamp01(ImpactPuffsRuntimeConfig.ShadowLightFactor);
-            float shadowMul = terrainOccluded
-                ? Mathf.Lerp(0.05f, 0.12f, shadowStrength) * 0.92f
-                : Mathf.Lerp(0.06f, includeTerrainOcclusion ? 0.14f : 0.16f, shadowStrength);
-            litFactor *= shadowMul;
-            float shadowCap = terrainOccluded ? 0.10f : 0.18f;
-            return Mathf.Clamp01(Mathf.Min(litFactor, shadowCap));
-        }
-
-        private static bool IsLocallySunOccluded(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, Vector3 sunDirection)
-        {
-            if (vessel == null || vessel.packed || !vessel.loaded || sunDirection.sqrMagnitude < 0.0001f)
-            {
-                return false;
-            }
-
-            Guid vesselId = vessel.id;
-            float now = Time.time;
-            SunOcclusionCacheEntry cacheEntry;
-            if (SunOcclusionCache.TryGetValue(vesselId, out cacheEntry))
-            {
-                float pointDeltaSq = (cacheEntry.SamplePoint - worldPoint).sqrMagnitude;
-                float directionDot = Vector3.Dot(cacheEntry.SunDirection, sunDirection);
-                if (now <= cacheEntry.ValidUntil && pointDeltaSq <= 9f && directionDot >= 0.995f)
-                {
-                    return cacheEntry.Occluded;
-                }
-            }
-
-            bool occluded = ComputeLocalSunOcclusion(vessel, worldPoint, surfaceNormal, sunDirection);
-            SunOcclusionCacheEntry updatedEntry = new SunOcclusionCacheEntry
-            {
-                Occluded = occluded,
-                ValidUntil = now + 0.14f,
-                SamplePoint = worldPoint,
-                SunDirection = sunDirection
-            };
-            SunOcclusionCache[vesselId] = updatedEntry;
-            return occluded;
-        }
-
-        private static bool ComputeLocalSunOcclusion(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, Vector3 sunDirection)
-        {
-            Vector3 normal = surfaceNormal;
-            if (normal.sqrMagnitude < 0.0001f)
-            {
-                normal = Vector3.up;
-            }
-            normal.Normalize();
-
-            Vector3 direction = sunDirection.normalized;
-            Vector3 origin = worldPoint + normal * 0.20f + direction * 0.05f;
-            float maxDistance = SunOcclusionRayDistance;
-
-            int hitCount = Physics.RaycastNonAlloc(
-                origin,
-                direction,
-                SunOcclusionHits,
-                maxDistance,
-                Physics.DefaultRaycastLayers,
-                QueryTriggerInteraction.Ignore
-            );
-            if (hitCount <= 0)
-            {
-                return false;
-            }
-
-            for (int i = 0; i < hitCount; i++)
-            {
-                RaycastHit hit = SunOcclusionHits[i];
-                if (hit.collider == null || hit.distance <= 0.03f)
-                {
-                    continue;
-                }
-
-                Part hitPart = hit.collider.GetComponentInParent<Part>();
-                if (hitPart != null && hitPart.vessel == vessel)
-                {
-                    continue;
-                }
-
-                if (vessel.rootPart != null && hit.collider.transform != null && hit.collider.transform.IsChildOf(vessel.rootPart.transform))
-                {
-                    continue;
-                }
-
-                return true;
-            }
-
-            return false;
-        }
-
     }
 
 }
-

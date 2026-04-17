@@ -20,6 +20,9 @@ namespace KerbalFX.BlastFX
         public const string LogTriggerViaSnapshot = "#LOC_KerbalFX_BlastFX_Log_TriggerViaSnapshot";
         public const string LogTriggerViaScan = "#LOC_KerbalFX_BlastFX_Log_TriggerViaScan";
         public const string LogPyroRing = "#LOC_KerbalFX_BlastFX_Log_PyroRing";
+        public const string LogSoftPuff = "#LOC_KerbalFX_BlastFX_Log_SoftPuff";
+        public const string LogPoolPrewarm = "#LOC_KerbalFX_BlastFX_Log_PoolPrewarm";
+        public const string LogPoolGrow = "#LOC_KerbalFX_BlastFX_Log_PoolGrow";
     }
 
     public class BlastFxParameters : GameParameters.CustomParameterNode
@@ -102,9 +105,6 @@ namespace KerbalFX.BlastFX
         public const float TriggerCooldown = 0.35f;
         public const float BaseRadius = 0.20f;
         public const float RadiusFromPart = 0.95f;
-        public const int SparkCount = 150;
-        public const int SmokeCount = 48;
-        public const int SoftPuffSmokeCount = 28;
         public const float SparkLife = 0.40f;
         public const float SmokeLife = 1.00f;
         public const float SparkSpeed = 5.4f;
@@ -120,7 +120,6 @@ namespace KerbalFX.BlastFX
         public const float HiddenRingCleanupInterval = 2.0f;
         public const float HiddenRingCleanupDistance = 1200f;
         public const float HiddenRingMaxLifetime = 180f;
-        public const float Cleanup = 3.6f;
         public static int Revision;
         private static DateTime stamp = DateTime.MinValue;
 
@@ -210,22 +209,10 @@ namespace KerbalFX.BlastFX
 
     internal static class BlastFxLog
     {
-        public static void Info(string msg)
-        {
-            Debug.Log("[KerbalFX] " + msg);
-        }
-
-        public static void DebugLog(string msg)
-        {
-            if (!BlastFxConfig.DebugLogging) return;
-            Debug.Log("[KerbalFX] " + msg);
-        }
-
-        public static void DebugException(string scope, Exception ex)
-        {
-            if (!BlastFxConfig.DebugLogging || ex == null) return;
-            Debug.Log("[KerbalFX] " + scope + " failed: " + ex.Message);
-        }
+        private static readonly KerbalFxLog impl = new KerbalFxLog(() => BlastFxConfig.DebugLogging);
+        public static void Info(string msg) { impl.Info(msg); }
+        public static void DebugLog(string msg) { impl.DebugLog(msg); }
+        public static void DebugException(string scope, Exception ex) { impl.DebugException(scope, ex); }
     }
 
 }

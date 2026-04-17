@@ -14,6 +14,7 @@ namespace KerbalFX.ImpactPuffs
             public Collider Collider;
             public bool Splash;
             public float QualityNorm;
+            public float QualityScale;
             public float BodyVisibility;
             public float BurstStrength;
             public float TouchdownEnergy01;
@@ -37,6 +38,7 @@ namespace KerbalFX.ImpactPuffs
             public float MaxSpeed;
             public float Gravity;
             public int BurstCount;
+            public float MaxParticlesScale;
             public float ShapeAngle;
             public float ShapeRadius;
             public float Lateral;
@@ -157,6 +159,7 @@ namespace KerbalFX.ImpactPuffs
             context.Splash = vessel.Splashed || vessel.situation == Vessel.Situations.SPLASHED;
             float quality = EngineGroundPuffEmitter.GetModeQualityScale();
             context.QualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
+            context.QualityScale = Mathf.Clamp(ImpactPuffsConfig.GetQualityScaleMultiplier(), 0.25f, 1.5f);
             context.BodyVisibility = ImpactPuffsRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
             context.BurstStrength = Mathf.Clamp01(impactSpeed / (ringShockMode ? 10.5f : 11.5f));
             context.TouchdownEnergy01 = GetTouchdownEnergy01(impactSpeed);
@@ -311,10 +314,15 @@ namespace KerbalFX.ImpactPuffs
                 * (context.Splash ? 1.08f : 1.00f)
                 * context.BodyVisibility
                 * 1.15f
-                * energyCountScale;
-            int ringDustCount = Mathf.RoundToInt(Mathf.Clamp(ringBase, 360f, 4600f));
-            int ringEdgeCount = Mathf.Clamp(Mathf.RoundToInt(ringDustCount * 0.62f), 180, 2800);
-            int ringMistCount = Mathf.Clamp(ringDustCount - ringEdgeCount, 120, 1800);
+                * energyCountScale
+                * context.QualityScale;
+            int ringDustCount = Mathf.RoundToInt(Mathf.Clamp(ringBase, 360f * context.QualityScale, 4600f * context.QualityScale));
+            int ringEdgeMin = Mathf.Max(1, Mathf.RoundToInt(180f * context.QualityScale));
+            int ringEdgeMax = Mathf.Max(ringEdgeMin, Mathf.RoundToInt(2800f * context.QualityScale));
+            int ringMistMin = Mathf.Max(1, Mathf.RoundToInt(120f * context.QualityScale));
+            int ringMistMax = Mathf.Max(ringMistMin, Mathf.RoundToInt(1800f * context.QualityScale));
+            int ringEdgeCount = Mathf.Clamp(Mathf.RoundToInt(ringDustCount * 0.62f), ringEdgeMin, ringEdgeMax);
+            int ringMistCount = Mathf.Clamp(ringDustCount - ringEdgeCount, ringMistMin, ringMistMax);
 
             Material dustMaterial = ImpactPuffsAssets.GetSharedMaterial();
             if (dustMaterial == null)
@@ -337,6 +345,7 @@ namespace KerbalFX.ImpactPuffs
                 MaxSpeed = 0.10f * Mathf.Lerp(0.96f, 1.12f, context.QualityNorm),
                 Gravity = 0.020f,
                 BurstCount = ringEdgeCount,
+                MaxParticlesScale = context.QualityScale,
                 ShapeAngle = Mathf.Lerp(context.Splash ? 76f : 74f, context.Splash ? 84f : 82f, context.QualityNorm),
                 ShapeRadius = radiusBase * 0.98f,
                 Lateral = lateralBase * 0.06f,
@@ -372,6 +381,7 @@ namespace KerbalFX.ImpactPuffs
                 MaxSpeed = 0.08f * Mathf.Lerp(0.96f, 1.12f, context.QualityNorm),
                 Gravity = 0.022f,
                 BurstCount = ringMistCount,
+                MaxParticlesScale = context.QualityScale,
                 ShapeAngle = Mathf.Lerp(context.Splash ? 72f : 70f, context.Splash ? 80f : 78f, context.QualityNorm),
                 ShapeRadius = radiusBase * 0.88f,
                 Lateral = lateralBase * 0.05f,
@@ -433,7 +443,11 @@ namespace KerbalFX.ImpactPuffs
             main.startLifetime = new ParticleSystem.MinMaxCurve(o.MinLife, o.MaxLife);
             main.startSpeed = new ParticleSystem.MinMaxCurve(o.MinSpeed, o.MaxSpeed);
             main.gravityModifier = o.Gravity;
-            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(36000f * ImpactPuffsRuntimeConfig.MaxParticlesMultiplier * ImpactPuffsRuntimeConfig.SharedMaxParticlesMultiplier, 6000f, 360000f));
+            float maxParticlesScale = Mathf.Clamp(o.MaxParticlesScale, 0.25f, 1.5f);
+            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(
+                36000f * ImpactPuffsRuntimeConfig.MaxParticlesMultiplier * ImpactPuffsRuntimeConfig.SharedMaxParticlesMultiplier * maxParticlesScale,
+                6000f * maxParticlesScale,
+                360000f * maxParticlesScale));
 
             ParticleSystem.EmissionModule emission = ps.emission;
             emission.enabled = true;

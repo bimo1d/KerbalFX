@@ -18,6 +18,7 @@ namespace KerbalFX.AeroFX
     internal struct WingtipRibbonAnchor
     {
         public Part Part;
+        public Part TrackingPart;
         public Vector3 WorldPoint;
         public Vector3 Outward;
         public Vector3 LocalPoint;
@@ -112,12 +113,14 @@ namespace KerbalFX.AeroFX
         }
     }
 
-    internal static class AeroTrailAnchors
+    internal static partial class AeroTrailAnchors
     {
         private struct Candidate
         {
             public Part Part;
+            public Part TrackingPart;
             public Vector3 Point;
+            public Vector3 RadialGroupPoint;
             public Vector3 Outward;
             public float Score;
             public float WeightedScore;
@@ -125,6 +128,7 @@ namespace KerbalFX.AeroFX
             public float LateralDistance;
             public float RadialDistance;
             public float ForwardOffset;
+            public float VisualSize;
             public WingtipAnchorRole Role;
         }
 
@@ -184,9 +188,9 @@ namespace KerbalFX.AeroFX
 
         private static readonly WingtipAnchorRole[] SecondaryRoleOrder =
         {
-            WingtipAnchorRole.Canard,
             WingtipAnchorRole.Tail,
             WingtipAnchorRole.MainWing,
+            WingtipAnchorRole.Canard,
             WingtipAnchorRole.Control
         };
         private const float PrimaryOuterLateralEpsilon = 0.01f;
@@ -201,10 +205,17 @@ namespace KerbalFX.AeroFX
         private const float SupportPointHeightTieEpsilon = 0.01f;
         private const float SupportPointRadialTieEpsilon = 0.01f;
         private const float SupportPointForwardTieEpsilon = 0.01f;
+        private const float StabilizerForwardBandTolerance = 0.35f;
+        private const float AircraftMainWingForwardLimit = -0.75f;
+        private const float RadialStabilizerAftBand = 1.15f;
+        private const float RadialStabilizerMinRadius = 0.35f;
+        private const float RadialStabilizerMinDirectionDot = 0.70f;
+        private const int RadialStabilizerMaxDirections = 4;
         private const float CenterMinTopHeight = 0.30f;
 
         private static Vector3 cachedUpAxis;
         private static Vector3 cachedForwardAxis;
+        private static Vector3 cachedRightAxis;
         private static Vector3 cachedCenterOfMass;
 
         private static readonly List<Candidate> allCandidates = new List<Candidate>(32);
@@ -256,6 +267,7 @@ namespace KerbalFX.AeroFX
             Vector3 upAxis = Vector3.Cross(forward, rightAxis).normalized;
             cachedUpAxis = upAxis;
             cachedForwardAxis = forward;
+            cachedRightAxis = rightAxis;
             cachedCenterOfMass = vessel.CoM;
 
             int resultLimit = Mathf.Clamp(maxResults, 1, results.Length);
@@ -307,7 +319,9 @@ namespace KerbalFX.AeroFX
                 Candidate candidate = new Candidate
                 {
                     Part = part,
+                    TrackingPart = part,
                     Point = supportPoint,
+                    RadialGroupPoint = boundsCenter,
                     Outward = outward,
                     Score = score,
                     WeightedScore = score + GetRoleScoreBias(role),
@@ -315,6 +329,7 @@ namespace KerbalFX.AeroFX
                     LateralDistance = Mathf.Abs(Vector3.Dot(supportOffset, rightAxis)),
                     RadialDistance = supportRadialOffset.magnitude,
                     ForwardOffset = Vector3.Dot(offset, forward),
+                    VisualSize = bounds.size.magnitude,
                     Role = role
                 };
 
@@ -328,23 +343,32 @@ namespace KerbalFX.AeroFX
             allCandidates.Sort(weightedScoreComparer);
             candidateSummary = BuildCandidateSummary();
 
-            SelectPrimaryOuterPair(resultLimit);
-            SelectCenterCandidate(resultLimit);
-            SelectSecondaryPriorityPairs(resultLimit);
-            FillRemainingCandidates(resultLimit);
-            EnforcePairSymmetry();
-            ExtendPrimaryTipsToVisualExtremity(vessel.parts, centerOfMass, forward, rightAxis);
+            if (ShouldUseRadialStabilizerMode())
+            {
+                SelectRadialStabilizerCandidates(resultLimit);
+            }
+            else
+            {
+                SelectPrimaryOuterPair(resultLimit);
+                SelectCenterCandidate(resultLimit);
+                SelectSecondaryPriorityPairs(resultLimit);
+                FillRemainingCandidates(resultLimit);
+                EnforcePairSymmetry();
+                ExtendPrimaryTipsToVisualExtremity(vessel.parts, centerOfMass, forward, rightAxis);
+            }
 
             int count = Mathf.Min(selectedCandidates.Count, resultLimit);
             for (int i = 0; i < count; i++)
             {
                 Candidate c = selectedCandidates[i];
+                Part trackingPart = c.TrackingPart != null ? c.TrackingPart : c.Part;
                 WingtipRibbonAnchor anchor;
                 anchor.Part = c.Part;
+                anchor.TrackingPart = trackingPart;
                 anchor.WorldPoint = c.Point;
                 anchor.Outward = c.Outward;
-                anchor.LocalPoint = c.Part.transform.InverseTransformPoint(c.Point);
-                anchor.LocalOutward = c.Part.transform.InverseTransformDirection(c.Outward);
+                anchor.LocalPoint = trackingPart.transform.InverseTransformPoint(c.Point);
+                anchor.LocalOutward = trackingPart.transform.InverseTransformDirection(c.Outward);
                 anchor.Score = c.WeightedScore;
                 anchor.SideSign = c.SideSign;
                 anchor.Role = c.Role;
@@ -393,45 +417,261 @@ namespace KerbalFX.AeroFX
         private static bool TryGetBestPrimaryCandidate(float sideSign, out Candidate candidate)
         {
             candidate = default(Candidate);
-            float bestLateral = float.MinValue;
+            if (TryGetBestPrimaryMainWingCandidate(sideSign, out candidate))
+                return true;
+            if (TryGetBestPrimaryStabilizerCandidate(sideSign, out candidate))
+                return true;
+            if (TryGetBestPrimaryFallbackCandidate(sideSign, false, out candidate))
+                return true;
+            return TryGetBestPrimaryFallbackCandidate(sideSign, true, out candidate);
+        }
 
+        private static bool ShouldUseRadialStabilizerMode()
+        {
+            bool hasAircraftMainWing = false;
+            float aftBandLimit;
+            if (!TryGetRadialStabilizerAftBandLimit(out aftBandLimit))
+                return false;
+
+            int directionCount = 0;
+            Vector3[] usedDirections = new Vector3[RadialStabilizerMaxDirections];
+            for (int i = 0; i < allCandidates.Count; i++)
+            {
+                Candidate candidate = allCandidates[i];
+                if (IsAircraftMainWingCandidate(candidate))
+                {
+                    hasAircraftMainWing = true;
+                    break;
+                }
+
+                if (!IsRadialStabilizerCandidate(candidate) || candidate.ForwardOffset > aftBandLimit)
+                    continue;
+
+                Vector3 direction;
+                if (!TryGetRadialDirection(candidate.RadialGroupPoint, out direction)
+                    || IsRadialDirectionUsed(direction, usedDirections, directionCount))
+                {
+                    continue;
+                }
+
+                if (directionCount < usedDirections.Length)
+                    usedDirections[directionCount] = direction;
+                directionCount++;
+            }
+
+            return !hasAircraftMainWing && directionCount >= 2;
+        }
+
+        private static bool IsAircraftMainWingCandidate(Candidate candidate)
+        {
+            return candidate.Role == WingtipAnchorRole.MainWing
+                && candidate.ForwardOffset > AircraftMainWingForwardLimit
+                && candidate.VisualSize > 0.85f;
+        }
+
+        private static bool TryGetRadialStabilizerAftBandLimit(out float aftBandLimit)
+        {
+            aftBandLimit = 0f;
+            float mostAft = float.MaxValue;
+            bool found = false;
+            for (int i = 0; i < allCandidates.Count; i++)
+            {
+                Candidate candidate = allCandidates[i];
+                if (!IsRadialStabilizerCandidate(candidate))
+                    continue;
+
+                if (candidate.ForwardOffset < mostAft)
+                    mostAft = candidate.ForwardOffset;
+                found = true;
+            }
+
+            if (!found)
+                return false;
+
+            aftBandLimit = mostAft + RadialStabilizerAftBand;
+            return true;
+        }
+
+        private static bool IsRadialStabilizerCandidate(Candidate candidate)
+        {
+            if (candidate.RadialDistance < RadialStabilizerMinRadius)
+                return false;
+            if (candidate.ForwardOffset > AircraftMainWingForwardLimit)
+                return false;
+            return candidate.Role == WingtipAnchorRole.Tail
+                || candidate.Role == WingtipAnchorRole.MainWing;
+        }
+
+        private static void SelectRadialStabilizerCandidates(int resultLimit)
+        {
+            float aftBandLimit;
+            if (!TryGetRadialStabilizerAftBandLimit(out aftBandLimit))
+                return;
+
+            while (selectedCandidates.Count < resultLimit)
+            {
+                Candidate candidate;
+                if (!TryGetBestRadialStabilizerCandidate(aftBandLimit, out candidate))
+                    break;
+
+                AddSelectedCandidate(candidate);
+            }
+        }
+
+        private static bool TryGetBestRadialStabilizerCandidate(
+            float aftBandLimit,
+            out Candidate candidate)
+        {
+            candidate = default(Candidate);
+            float bestScore = float.MinValue;
             for (int i = 0; i < allCandidates.Count; i++)
             {
                 Candidate current = allCandidates[i];
-                if (current.SideSign != sideSign || IsSelected(current.Part))
+                if (IsSelected(current.Part))
                     continue;
-                if (current.LateralDistance < CenterLateralThreshold)
-                    continue;
-                if (current.Role == WingtipAnchorRole.Control)
+                if (!IsRadialStabilizerCandidate(current) || current.ForwardOffset > aftBandLimit)
                     continue;
 
-                if (current.LateralDistance > bestLateral)
+                RecomputeAsRadialOuterPoint(ref current);
+                if (IsSelectedRadialDirection(current))
+                    continue;
+
+                float score = EvaluateRadialStabilizerScore(current);
+                if (score <= bestScore)
+                    continue;
+
+                bestScore = score;
+                candidate = current;
+            }
+
+            return candidate.Part != null;
+        }
+
+        private static bool IsSelectedRadialDirection(Candidate candidate)
+        {
+            Vector3 direction;
+            if (!TryGetRadialDirection(candidate.RadialGroupPoint, out direction))
+                return false;
+
+            for (int i = 0; i < selectedCandidates.Count; i++)
+            {
+                Vector3 selectedDirection;
+                if (TryGetRadialDirection(selectedCandidates[i].RadialGroupPoint, out selectedDirection)
+                    && Vector3.Dot(direction, selectedDirection) > RadialStabilizerMinDirectionDot)
                 {
-                    bestLateral = current.LateralDistance;
-                    candidate = current;
+                    return true;
                 }
             }
 
-            if (candidate.Part != null)
-                return true;
+            return false;
+        }
 
-            bestLateral = float.MinValue;
+        private static bool TryGetRadialDirection(Vector3 point, out Vector3 direction)
+        {
+            direction = Vector3.zero;
+            Vector3 radialOffset = Vector3.ProjectOnPlane(point - cachedCenterOfMass, cachedForwardAxis);
+            if (radialOffset.sqrMagnitude < 0.01f)
+                return false;
+
+            direction = radialOffset.normalized;
+            return true;
+        }
+
+        private static bool IsRadialDirectionUsed(Vector3 direction, Vector3[] usedDirections, int directionCount)
+        {
+            int count = Mathf.Min(directionCount, usedDirections.Length);
+            for (int i = 0; i < count; i++)
+            {
+                if (Vector3.Dot(direction, usedDirections[i]) > RadialStabilizerMinDirectionDot)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetBestPrimaryMainWingCandidate(float sideSign, out Candidate candidate)
+        {
+            candidate = default(Candidate);
             for (int i = 0; i < allCandidates.Count; i++)
             {
                 Candidate current = allCandidates[i];
-                if (current.SideSign != sideSign || IsSelected(current.Part))
+                if (current.SideSign != sideSign || current.Role != WingtipAnchorRole.MainWing || IsSelected(current.Part))
                     continue;
                 if (current.LateralDistance < CenterLateralThreshold)
                     continue;
 
-                if (current.LateralDistance > bestLateral)
+                if (IsBetterPrimaryOuterCandidate(current, candidate))
+                    candidate = current;
+            }
+
+            return candidate.Part != null;
+        }
+
+        private static bool TryGetBestPrimaryStabilizerCandidate(float sideSign, out Candidate candidate)
+        {
+            candidate = default(Candidate);
+            float bestLateral = float.MinValue;
+            float bestScore = float.MinValue;
+
+            for (int i = 0; i < allCandidates.Count; i++)
+            {
+                Candidate current = allCandidates[i];
+                if (current.SideSign != sideSign || current.Role != WingtipAnchorRole.Tail || IsSelected(current.Part))
+                    continue;
+                if (current.LateralDistance < CenterLateralThreshold)
+                    continue;
+
+                float score = EvaluatePrimaryStabilizerScore(current);
+                if (score < bestScore - SupportPointForwardTieEpsilon)
+                    continue;
+
+                if (score > bestScore + SupportPointForwardTieEpsilon
+                    || current.LateralDistance > bestLateral + PrimaryOuterLateralEpsilon)
                 {
+                    bestScore = score;
                     bestLateral = current.LateralDistance;
                     candidate = current;
                 }
             }
 
             return candidate.Part != null;
+        }
+
+        private static bool TryGetBestPrimaryFallbackCandidate(float sideSign, bool includeControl, out Candidate candidate)
+        {
+            candidate = default(Candidate);
+            for (int i = 0; i < allCandidates.Count; i++)
+            {
+                Candidate current = allCandidates[i];
+                if (current.SideSign != sideSign || IsSelected(current.Part))
+                    continue;
+                if (current.LateralDistance < CenterLateralThreshold)
+                    continue;
+                if (!includeControl && current.Role == WingtipAnchorRole.Control)
+                    continue;
+                if (current.Role == WingtipAnchorRole.MainWing || current.Role == WingtipAnchorRole.Tail)
+                    continue;
+
+                if (IsBetterPrimaryOuterCandidate(current, candidate))
+                    candidate = current;
+            }
+
+            return candidate.Part != null;
+        }
+
+        private static bool IsBetterPrimaryOuterCandidate(Candidate current, Candidate best)
+        {
+            if (best.Part == null)
+                return true;
+            if (current.LateralDistance > best.LateralDistance + PrimaryOuterLateralEpsilon)
+                return true;
+            if (current.LateralDistance < best.LateralDistance - PrimaryOuterLateralEpsilon)
+                return false;
+            if (current.RadialDistance > best.RadialDistance + SupportPointRadialTieEpsilon)
+                return true;
+            if (current.RadialDistance < best.RadialDistance - SupportPointRadialTieEpsilon)
+                return false;
+            return current.WeightedScore > best.WeightedScore;
         }
 
         private static void SelectCenterCandidate(int resultLimit)
@@ -500,53 +740,6 @@ namespace KerbalFX.AeroFX
             }
 
             return candidate.Part != null;
-        }
-
-        private static void RecomputeAsTopPoint(ref Candidate candidate)
-        {
-            if (candidate.Part == null)
-                return;
-
-            Bounds bounds;
-            if (!TryGetPartBounds(candidate.Part, out bounds))
-                return;
-
-            Vector3 bestPoint = bounds.center + cachedUpAxis * bounds.extents.magnitude * 0.5f;
-            float bestDot = float.MinValue;
-
-            var meshFilters = candidate.Part.FindModelComponents<MeshFilter>();
-            if (meshFilters != null)
-            {
-                for (int i = 0; i < meshFilters.Count; i++)
-                {
-                    MeshFilter mf = meshFilters[i];
-                    if (mf == null || mf.sharedMesh == null || mf.transform == null)
-                        continue;
-
-                    Vector3[] vertices = mf.sharedMesh.vertices;
-                    if (vertices == null || vertices.Length == 0)
-                        continue;
-
-                    Transform t = mf.transform;
-                    for (int j = 0; j < vertices.Length; j++)
-                    {
-                        Vector3 wp = t.TransformPoint(vertices[j]);
-                        float dot = Vector3.Dot(wp - cachedCenterOfMass, cachedUpAxis);
-                        if (dot > bestDot)
-                        {
-                            bestDot = dot;
-                            bestPoint = wp;
-                        }
-                    }
-                }
-            }
-
-            candidate.Point = bestPoint;
-            Vector3 radialOffset = Vector3.ProjectOnPlane(bestPoint - cachedCenterOfMass, cachedForwardAxis);
-            if (radialOffset.sqrMagnitude > 0.01f)
-                candidate.Outward = radialOffset.normalized;
-            else
-                candidate.Outward = cachedUpAxis;
         }
 
         private static void SelectSecondaryPriorityPairs(int resultLimit)
@@ -643,189 +836,6 @@ namespace KerbalFX.AeroFX
             }
         }
 
-        private static void ExtendPrimaryTipsToVisualExtremity(
-            List<Part> parts,
-            Vector3 centerOfMass,
-            Vector3 forwardAxis,
-            Vector3 rightAxis)
-        {
-            int leftIdx = -1, rightIdx = -1;
-            for (int i = 0; i < selectedCandidates.Count; i++)
-            {
-                if (selectedCandidates[i].Role != WingtipAnchorRole.MainWing)
-                    continue;
-                if (selectedCandidates[i].SideSign < 0f && leftIdx < 0)
-                    leftIdx = i;
-                else if (selectedCandidates[i].SideSign > 0f && rightIdx < 0)
-                    rightIdx = i;
-            }
-            if (leftIdx < 0 && rightIdx < 0)
-                return;
-
-            float bestLeftLat = leftIdx >= 0 ? selectedCandidates[leftIdx].LateralDistance : 0f;
-            float bestRightLat = rightIdx >= 0 ? selectedCandidates[rightIdx].LateralDistance : 0f;
-            Vector3 bestLeftPt = leftIdx >= 0 ? selectedCandidates[leftIdx].Point : Vector3.zero;
-            Vector3 bestRightPt = rightIdx >= 0 ? selectedCandidates[rightIdx].Point : Vector3.zero;
-            float bestLeftHeight = leftIdx >= 0 ? Vector3.Dot(bestLeftPt - centerOfMass, cachedUpAxis) : float.MinValue;
-            float bestRightHeight = rightIdx >= 0 ? Vector3.Dot(bestRightPt - centerOfMass, cachedUpAxis) : float.MinValue;
-            float bestLeftRadial = leftIdx >= 0
-                ? Vector3.ProjectOnPlane(bestLeftPt - centerOfMass, forwardAxis).magnitude
-                : float.MinValue;
-            float bestRightRadial = rightIdx >= 0
-                ? Vector3.ProjectOnPlane(bestRightPt - centerOfMass, forwardAxis).magnitude
-                : float.MinValue;
-            bool leftExt = false, rightExt = false;
-
-            for (int p = 0; p < parts.Count; p++)
-            {
-                Part part = parts[p];
-                if (part == null)
-                    continue;
-
-                WingtipAnchorRole sourceRole;
-                if (!TryGetAnchorRole(part, out sourceRole))
-                    sourceRole = WingtipAnchorRole.None;
-
-                Bounds bounds;
-                if (!TryGetPartBounds(part, out bounds))
-                    continue;
-
-                float bCenterLat = Vector3.Dot(bounds.center - centerOfMass, rightAxis);
-                float bReach = bounds.extents.x * Mathf.Abs(rightAxis.x)
-                    + bounds.extents.y * Mathf.Abs(rightAxis.y)
-                    + bounds.extents.z * Mathf.Abs(rightAxis.z);
-                bool canLeft = leftIdx >= 0
-                    && (-bCenterLat + bReach > bestLeftLat - MainSurfaceLateralTieEpsilon);
-                bool canRight = rightIdx >= 0
-                    && (bCenterLat + bReach > bestRightLat - MainSurfaceLateralTieEpsilon);
-                if (!canLeft && !canRight)
-                    continue;
-
-                if (canLeft)
-                {
-                    Vector3 leftPoint;
-                    float leftLateral;
-                    float leftHeight;
-                    float leftRadial;
-                    if (TryGetCenteredFrontierPoint(
-                        part,
-                        centerOfMass,
-                        forwardAxis,
-                        rightAxis,
-                        -1f,
-                        out leftPoint,
-                        out leftLateral,
-                        out leftHeight,
-                        out leftRadial)
-                        && IsBetterExtendedPrimaryPoint(
-                            sourceRole,
-                            leftLateral,
-                            leftHeight,
-                            leftRadial,
-                            bestLeftLat,
-                            bestLeftHeight,
-                            bestLeftRadial))
-                    {
-                        bestLeftLat = leftLateral;
-                        bestLeftHeight = leftHeight;
-                        bestLeftRadial = leftRadial;
-                        bestLeftPt = leftPoint;
-                        leftExt = true;
-                    }
-                }
-
-                if (canRight)
-                {
-                    Vector3 rightPoint;
-                    float rightLateral;
-                    float rightHeight;
-                    float rightRadial;
-                    if (TryGetCenteredFrontierPoint(
-                        part,
-                        centerOfMass,
-                        forwardAxis,
-                        rightAxis,
-                        1f,
-                        out rightPoint,
-                        out rightLateral,
-                        out rightHeight,
-                        out rightRadial)
-                        && IsBetterExtendedPrimaryPoint(
-                            sourceRole,
-                            rightLateral,
-                            rightHeight,
-                            rightRadial,
-                            bestRightLat,
-                            bestRightHeight,
-                            bestRightRadial))
-                    {
-                        bestRightLat = rightLateral;
-                        bestRightHeight = rightHeight;
-                        bestRightRadial = rightRadial;
-                        bestRightPt = rightPoint;
-                        rightExt = true;
-                    }
-                }
-            }
-
-            if (leftExt)
-            {
-                Candidate c = selectedCandidates[leftIdx];
-                c.Point = bestLeftPt;
-                Vector3 radial = Vector3.ProjectOnPlane(bestLeftPt - centerOfMass, forwardAxis);
-                if (radial.sqrMagnitude > 0.01f)
-                    c.Outward = radial.normalized;
-                c.LateralDistance = bestLeftLat;
-                selectedCandidates[leftIdx] = c;
-            }
-            if (rightExt)
-            {
-                Candidate c = selectedCandidates[rightIdx];
-                c.Point = bestRightPt;
-                Vector3 radial = Vector3.ProjectOnPlane(bestRightPt - centerOfMass, forwardAxis);
-                if (radial.sqrMagnitude > 0.01f)
-                    c.Outward = radial.normalized;
-                c.LateralDistance = bestRightLat;
-                selectedCandidates[rightIdx] = c;
-            }
-        }
-
-        private static bool IsBetterExtendedPrimaryPoint(
-            WingtipAnchorRole sourceRole,
-            float lateralDist,
-            float heightAboveCom,
-            float radialDist,
-            float bestLateralDist,
-            float bestHeightAboveCom,
-            float bestRadialDist)
-        {
-            float lateralGain = lateralDist - bestLateralDist;
-            if (lateralGain < -PrimaryExtensionLateralGainEpsilon)
-                return false;
-
-            float heightLoss = bestHeightAboveCom - heightAboveCom;
-            float maxHeightLoss = sourceRole == WingtipAnchorRole.Control
-                ? PrimaryExtensionControlMaxHeightLoss
-                : PrimaryExtensionMaxHeightLoss;
-            if (heightLoss > maxHeightLoss)
-                return false;
-
-            if (lateralGain > PrimaryExtensionForcedLateralGain)
-                return true;
-
-            if (lateralGain > PrimaryExtensionLateralGainEpsilon)
-            {
-                return true;
-            }
-
-            if (heightAboveCom > bestHeightAboveCom + SupportPointHeightTieEpsilon)
-                return true;
-            if (heightAboveCom < bestHeightAboveCom - SupportPointHeightTieEpsilon)
-                return false;
-
-            return radialDist > bestRadialDist + SupportPointRadialTieEpsilon;
-        }
-
         private static float GetPreferredSide()
         {
             int leftCount = 0;
@@ -864,6 +874,8 @@ namespace KerbalFX.AeroFX
             {
                 Candidate current = allCandidates[i];
                 if (current.SideSign != sideSign || current.Role != role || IsSelected(current.Part))
+                    continue;
+                if (current.Role == WingtipAnchorRole.Tail && IsForwardOfSelectedStabilizerBand(current))
                     continue;
 
                 float outerScore = current.WeightedScore
@@ -970,6 +982,8 @@ namespace KerbalFX.AeroFX
                     continue;
                 if (current.LateralDistance < CenterLateralThreshold)
                     continue;
+                if (IsForwardOfSelectedStabilizerBand(current))
+                    continue;
 
                 float tailScore = EvaluateTailRoleScore(current, outerCandidate);
                 if (tailScore <= bestScore)
@@ -1034,6 +1048,8 @@ namespace KerbalFX.AeroFX
                 candidate = current;
             }
 
+            if (candidate.Part != null && role == WingtipAnchorRole.MainWing)
+                RecomputeAftMainWingAsTopPoint(ref candidate);
             return candidate.Part != null;
         }
 
@@ -1085,6 +1101,8 @@ namespace KerbalFX.AeroFX
                     continue;
                 if (current.LateralDistance < CenterLateralThreshold)
                     continue;
+                if (current.Role == WingtipAnchorRole.Tail && IsForwardOfSelectedStabilizerBand(current))
+                    continue;
 
                 float score = current.RadialDistance * 0.35f
                     - current.LateralDistance * 0.60f;
@@ -1114,6 +1132,27 @@ namespace KerbalFX.AeroFX
             for (int i = 0; i < selectedCandidates.Count; i++)
             {
                 if (selectedCandidates[i].Part == part)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsForwardOfSelectedStabilizerBand(Candidate candidate)
+        {
+            if (candidate.Role != WingtipAnchorRole.Tail)
+                return false;
+
+            for (int i = 0; i < selectedCandidates.Count; i++)
+            {
+                Candidate selected = selectedCandidates[i];
+                if (selected.SideSign != candidate.SideSign)
+                    continue;
+                if (selected.LateralDistance < CenterLateralThreshold)
+                    continue;
+                if (selected.Role != WingtipAnchorRole.Tail && selected.Role != WingtipAnchorRole.MainWing)
+                    continue;
+                if (selected.ForwardOffset + StabilizerForwardBandTolerance < candidate.ForwardOffset)
                     return true;
             }
 
@@ -1241,435 +1280,5 @@ namespace KerbalFX.AeroFX
             return part.partInfo != null ? part.partInfo.name : part.name;
         }
 
-        private static float GetRoleScoreBias(WingtipAnchorRole role)
-        {
-            switch (role)
-            {
-                case WingtipAnchorRole.MainWing:
-                    return 0.70f;
-                case WingtipAnchorRole.Tail:
-                    return 1.25f;
-                case WingtipAnchorRole.Control:
-                    return 0.10f;
-                case WingtipAnchorRole.Canard:
-                    return -0.35f;
-                default:
-                    return 0f;
-            }
-        }
-
-        private static float GetOuterRoleBias(WingtipAnchorRole role)
-        {
-            switch (role)
-            {
-                case WingtipAnchorRole.MainWing:
-                    return 0.90f;
-                case WingtipAnchorRole.Tail:
-                    return 0.25f;
-                case WingtipAnchorRole.Control:
-                    return 0.10f;
-                case WingtipAnchorRole.Canard:
-                    return -0.20f;
-                default:
-                    return 0f;
-            }
-        }
-
-        private static float EvaluateTailRoleScore(Candidate candidate, Candidate outerCandidate)
-        {
-            float aft01 = Mathf.InverseLerp(0.05f, 2.50f, -candidate.ForwardOffset);
-            float center01 = 1f - Mathf.InverseLerp(0.20f, outerCandidate.LateralDistance, candidate.LateralDistance);
-            float lateralPenalty = Mathf.InverseLerp(0.50f, outerCandidate.LateralDistance, candidate.LateralDistance);
-            float roleTypeBias = IsFinLikePart(candidate.Part) ? -1.10f : (IsTailplaneLikePart(candidate.Part) ? 0.55f : 0f);
-            return roleTypeBias
-                + aft01 * 3.20f
-                + center01 * 5.00f
-                - lateralPenalty * 4.50f;
-        }
-
-        private static float EvaluatePreferredTailScore(Candidate candidate, Candidate outerCandidate)
-        {
-            float aftDelta = Mathf.Max(0f, outerCandidate.ForwardOffset - candidate.ForwardOffset);
-            float aftDelta01 = Mathf.Clamp01(aftDelta / 0.90f);
-            float center01 = 1f - Mathf.InverseLerp(0.20f, outerCandidate.LateralDistance, candidate.LateralDistance);
-            float lateralPenalty = Mathf.InverseLerp(0.50f, outerCandidate.LateralDistance, candidate.LateralDistance);
-            const float roleBias = 0.85f;
-            return roleBias
-                + aftDelta01 * 2.50f
-                + center01 * 5.00f
-                - lateralPenalty * 4.50f;
-        }
-
-        private static float EvaluateCanardRoleScore(Candidate candidate, float outerRadial)
-        {
-            float forward01 = Mathf.InverseLerp(0.05f, 2.50f, candidate.ForwardOffset);
-            float center01 = 1f - Mathf.InverseLerp(0.20f, outerRadial, candidate.LateralDistance);
-            float lateralPenalty = Mathf.InverseLerp(0.50f, outerRadial, candidate.LateralDistance);
-            return forward01 * 2.60f
-                + center01 * 4.00f
-                - lateralPenalty * 3.50f;
-        }
-
-        private static float EvaluateAftFallbackScore(Candidate candidate, float outerRadial)
-        {
-            float aft01 = Mathf.InverseLerp(0.05f, 2.50f, -candidate.ForwardOffset);
-            float center01 = 1f - Mathf.InverseLerp(0.20f, outerRadial, candidate.LateralDistance);
-            float lateralPenalty = Mathf.InverseLerp(0.50f, outerRadial, candidate.LateralDistance);
-            return aft01 * 3.00f
-                + center01 * 5.00f
-                - lateralPenalty * 4.50f;
-        }
-
-        private static bool TryGetPartBounds(Part part, out Bounds bounds)
-        {
-            bounds = new Bounds();
-            if (part == null)
-                return false;
-
-            var renderers = part.FindModelComponents<Renderer>();
-            if (renderers == null || renderers.Count == 0)
-                return false;
-
-            bool initialized = false;
-            for (int i = 0; i < renderers.Count; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (renderer == null || !renderer.enabled)
-                    continue;
-
-                if (!initialized)
-                {
-                    bounds = renderer.bounds;
-                    initialized = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(renderer.bounds);
-                }
-            }
-
-            return initialized;
-        }
-
-        private static bool TryGetPartTipPoint(
-            Part part,
-            Bounds bounds,
-            Vector3 centerOfMass,
-            Vector3 forwardAxis,
-            Vector3 rightAxis,
-            WingtipAnchorRole role,
-            out Vector3 point,
-            out Vector3 outward,
-            out float score)
-        {
-            point = bounds.center;
-            outward = Vector3.right;
-            score = float.MinValue;
-
-            Vector3 partCenter = bounds.center;
-            bool foundMeshPoint = false;
-            float bestScore = float.MinValue;
-            Vector3 bestPoint = partCenter;
-            float bestLateralDist = float.MinValue;
-            float bestHeightAboveCom = float.MinValue;
-            float bestRadialDist = float.MinValue;
-            float bestForwardOffset = float.MaxValue;
-
-            var meshFilters = part.FindModelComponents<MeshFilter>();
-            if (meshFilters != null)
-            {
-                for (int i = 0; i < meshFilters.Count; i++)
-                {
-                    MeshFilter meshFilter = meshFilters[i];
-                    if (meshFilter == null || meshFilter.sharedMesh == null || meshFilter.transform == null)
-                        continue;
-
-                    Vector3[] vertices = meshFilter.sharedMesh.vertices;
-                    if (vertices == null || vertices.Length == 0)
-                        continue;
-
-                    Transform meshTransform = meshFilter.transform;
-                    for (int j = 0; j < vertices.Length; j++)
-                    {
-                        Vector3 worldPoint = meshTransform.TransformPoint(vertices[j]);
-                        Vector3 offsetFromCom = worldPoint - centerOfMass;
-                        Vector3 radialOffset = Vector3.ProjectOnPlane(offsetFromCom, forwardAxis);
-                        float radialDist = radialOffset.magnitude;
-                        if (radialDist < 0.20f)
-                            continue;
-
-                        float lateralDist = Mathf.Abs(Vector3.Dot(offsetFromCom, rightAxis));
-                        float heightAboveCom = Vector3.Dot(offsetFromCom, cachedUpAxis);
-                        Vector3 offsetFromPart = worldPoint - partCenter;
-                        float forwardOffset = Mathf.Abs(Vector3.Dot(offsetFromPart, forwardAxis));
-                        float candidateScore = EvaluateSupportPointScore(role, lateralDist, radialDist, forwardOffset, heightAboveCom);
-                        if (!IsBetterSupportPoint(
-                            role,
-                            lateralDist,
-                            heightAboveCom,
-                            radialDist,
-                            forwardOffset,
-                            candidateScore,
-                            bestLateralDist,
-                            bestHeightAboveCom,
-                            bestRadialDist,
-                            bestForwardOffset,
-                            bestScore))
-                            continue;
-
-                        bestScore = candidateScore;
-                        bestLateralDist = lateralDist;
-                        bestHeightAboveCom = heightAboveCom;
-                        bestRadialDist = radialDist;
-                        bestForwardOffset = forwardOffset;
-                        bestPoint = worldPoint;
-                        foundMeshPoint = true;
-                    }
-                }
-            }
-
-            if (!foundMeshPoint)
-            {
-                Vector3 offset = bounds.center - centerOfMass;
-                Vector3 radialOffset = Vector3.ProjectOnPlane(offset, forwardAxis);
-                bestPoint = bounds.center + radialOffset.normalized * bounds.extents.magnitude * 0.5f;
-                float lateralDist = Mathf.Abs(Vector3.Dot(offset, rightAxis));
-                bestScore = EvaluateSupportPointFallbackScore(role, lateralDist, radialOffset.magnitude);
-            }
-            else if (role == WingtipAnchorRole.MainWing
-                || role == WingtipAnchorRole.Control
-                || role == WingtipAnchorRole.Canard)
-            {
-                float sideSign = Vector3.Dot(bestPoint - centerOfMass, rightAxis) < 0f ? -1f : 1f;
-                Vector3 centeredPoint;
-                float centeredLateral;
-                float centeredHeight;
-                float centeredRadial;
-                if (TryGetCenteredFrontierPoint(
-                    part,
-                    centerOfMass,
-                    forwardAxis,
-                    rightAxis,
-                    sideSign,
-                    out centeredPoint,
-                    out centeredLateral,
-                    out centeredHeight,
-                    out centeredRadial)
-                    && centeredLateral >= bestLateralDist - MainSurfaceLateralTieEpsilon)
-                {
-                    bestPoint = centeredPoint;
-                    bestLateralDist = centeredLateral;
-                    bestHeightAboveCom = centeredHeight;
-                    bestRadialDist = centeredRadial;
-                    bestScore = EvaluateSupportPointScore(
-                        role,
-                        centeredLateral,
-                        centeredRadial,
-                        Mathf.Abs(Vector3.Dot(centeredPoint - partCenter, forwardAxis)),
-                        centeredHeight);
-                }
-            }
-
-            Vector3 finalRadialOffset = Vector3.ProjectOnPlane(bestPoint - centerOfMass, forwardAxis);
-            if (finalRadialOffset.sqrMagnitude < 0.01f)
-                return false;
-
-            point = bestPoint;
-            outward = finalRadialOffset.normalized;
-            score = bestScore;
-            return true;
-        }
-
-        private static bool IsBetterSupportPoint(
-            WingtipAnchorRole role,
-            float lateralDist,
-            float heightAboveCom,
-            float radialDist,
-            float forwardOffset,
-            float candidateScore,
-            float bestLateralDist,
-            float bestHeightAboveCom,
-            float bestRadialDist,
-            float bestForwardOffset,
-            float bestScore)
-        {
-            if (bestScore == float.MinValue)
-                return true;
-
-            if (role == WingtipAnchorRole.MainWing
-                || role == WingtipAnchorRole.Control
-                || role == WingtipAnchorRole.Canard)
-            {
-                float heightLoss = bestHeightAboveCom - heightAboveCom;
-                float maxHeightLoss = role == WingtipAnchorRole.Control
-                    ? ControlSurfaceSupportMaxHeightLoss
-                    : MainSurfaceSupportMaxHeightLoss;
-
-                if (lateralDist > bestLateralDist + MainSurfaceLateralTieEpsilon)
-                {
-                    if (heightLoss > maxHeightLoss)
-                        return false;
-                    return true;
-                }
-                if (lateralDist < bestLateralDist - MainSurfaceLateralTieEpsilon)
-                    return false;
-
-                if (heightAboveCom > bestHeightAboveCom + SupportPointHeightTieEpsilon)
-                    return true;
-                if (heightAboveCom < bestHeightAboveCom - SupportPointHeightTieEpsilon)
-                    return false;
-
-                if (radialDist > bestRadialDist + SupportPointRadialTieEpsilon)
-                    return true;
-                if (radialDist < bestRadialDist - SupportPointRadialTieEpsilon)
-                    return false;
-
-                if (forwardOffset < bestForwardOffset - SupportPointForwardTieEpsilon)
-                    return true;
-                if (forwardOffset > bestForwardOffset + SupportPointForwardTieEpsilon)
-                    return false;
-            }
-
-            return candidateScore > bestScore;
-        }
-
-        private static bool TryGetCenteredFrontierPoint(
-            Part part,
-            Vector3 centerOfMass,
-            Vector3 forwardAxis,
-            Vector3 rightAxis,
-            float sideSign,
-            out Vector3 point,
-            out float lateralDist,
-            out float heightAboveCom,
-            out float radialDist)
-        {
-            point = Vector3.zero;
-            lateralDist = 0f;
-            heightAboveCom = 0f;
-            radialDist = 0f;
-
-            var meshFilters = part.FindModelComponents<MeshFilter>();
-            if (meshFilters == null)
-                return false;
-
-            float bestLateral = float.MinValue;
-            bool found = false;
-            Vector3 highPoint = Vector3.zero;
-            Vector3 lowPoint = Vector3.zero;
-            float highest = float.MinValue;
-            float lowest = float.MaxValue;
-
-            for (int i = 0; i < meshFilters.Count; i++)
-            {
-                MeshFilter meshFilter = meshFilters[i];
-                if (meshFilter == null || meshFilter.sharedMesh == null || meshFilter.transform == null)
-                    continue;
-
-                Vector3[] vertices = meshFilter.sharedMesh.vertices;
-                if (vertices == null || vertices.Length == 0)
-                    continue;
-
-                Transform meshTransform = meshFilter.transform;
-                for (int j = 0; j < vertices.Length; j++)
-                {
-                    Vector3 worldPoint = meshTransform.TransformPoint(vertices[j]);
-                    float signedLateral = Vector3.Dot(worldPoint - centerOfMass, rightAxis);
-                    if (sideSign < 0f && signedLateral >= 0f)
-                        continue;
-                    if (sideSign > 0f && signedLateral <= 0f)
-                        continue;
-
-                    float absLateral = Mathf.Abs(signedLateral);
-                    if (absLateral > bestLateral + MainSurfaceLateralTieEpsilon)
-                    {
-                        bestLateral = absLateral;
-                        float height = Vector3.Dot(worldPoint - centerOfMass, cachedUpAxis);
-                        highest = height;
-                        lowest = height;
-                        highPoint = worldPoint;
-                        lowPoint = worldPoint;
-                        found = true;
-                        continue;
-                    }
-
-                    if (absLateral < bestLateral - MainSurfaceLateralTieEpsilon)
-                        continue;
-
-                    float pointHeight = Vector3.Dot(worldPoint - centerOfMass, cachedUpAxis);
-                    if (!found)
-                    {
-                        bestLateral = absLateral;
-                        highest = pointHeight;
-                        lowest = pointHeight;
-                        highPoint = worldPoint;
-                        lowPoint = worldPoint;
-                        found = true;
-                        continue;
-                    }
-
-                    if (pointHeight > highest)
-                    {
-                        highest = pointHeight;
-                        highPoint = worldPoint;
-                    }
-
-                    if (pointHeight < lowest)
-                    {
-                        lowest = pointHeight;
-                        lowPoint = worldPoint;
-                    }
-                }
-            }
-
-            if (!found)
-                return false;
-
-            point = (highPoint + lowPoint) * 0.5f;
-            lateralDist = Mathf.Abs(Vector3.Dot(point - centerOfMass, rightAxis));
-            heightAboveCom = Vector3.Dot(point - centerOfMass, cachedUpAxis);
-            radialDist = Vector3.ProjectOnPlane(point - centerOfMass, forwardAxis).magnitude;
-            return radialDist >= 0.20f;
-        }
-
-        private static float EvaluateSupportPointScore(
-            WingtipAnchorRole role,
-            float lateralDist,
-            float radialDist,
-            float forwardOffset,
-            float heightAboveCom)
-        {
-            switch (role)
-            {
-                case WingtipAnchorRole.MainWing:
-                    return lateralDist * 3.00f + radialDist * 0.25f - forwardOffset * 0.05f;
-                case WingtipAnchorRole.Control:
-                case WingtipAnchorRole.Canard:
-                    return radialDist * 2.20f + lateralDist * 0.35f - forwardOffset * 0.08f;
-                case WingtipAnchorRole.Tail:
-                    return heightAboveCom * 1.80f + radialDist * 1.00f + lateralDist * 0.20f - forwardOffset * 0.12f;
-                default:
-                    return radialDist * 1.95f - forwardOffset * 0.20f;
-            }
-        }
-
-        private static float EvaluateSupportPointFallbackScore(
-            WingtipAnchorRole role,
-            float lateralDist,
-            float radialDist)
-        {
-            switch (role)
-            {
-                case WingtipAnchorRole.MainWing:
-                    return lateralDist * 2.50f + radialDist * 0.30f;
-                case WingtipAnchorRole.Control:
-                case WingtipAnchorRole.Canard:
-                    return radialDist * 1.90f + lateralDist * 0.40f;
-                case WingtipAnchorRole.Tail:
-                    return radialDist * 1.55f + lateralDist * 0.25f;
-                default:
-                    return radialDist * 1.60f;
-            }
-        }
     }
 }

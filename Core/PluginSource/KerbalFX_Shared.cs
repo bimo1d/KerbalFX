@@ -159,6 +159,37 @@ namespace KerbalFX
             return false;
         }
 
+        public static bool TryGetPartColliderBounds(Part part, out Bounds bounds, bool requireEnabled)
+        {
+            bounds = new Bounds();
+            if (part == null)
+                return false;
+
+            List<Collider> colliders = part.FindModelComponents<Collider>();
+            if (colliders == null || colliders.Count == 0)
+                return false;
+
+            bool initialized = false;
+            for (int i = 0; i < colliders.Count; i++)
+            {
+                Collider collider = colliders[i];
+                if (collider == null || (requireEnabled && !collider.enabled))
+                    continue;
+
+                if (!initialized)
+                {
+                    bounds = collider.bounds;
+                    initialized = true;
+                }
+                else
+                {
+                    bounds.Encapsulate(collider.bounds);
+                }
+            }
+
+            return initialized;
+        }
+
         public static uint ComputeVesselPartSignature(Vessel vessel)
         {
             if (vessel == null || vessel.parts == null)
@@ -252,13 +283,6 @@ namespace KerbalFX
             return vessel.vesselType != VesselType.Flag && vessel.vesselType != VesselType.Debris;
         }
 
-        public static string GetPartName(Part part)
-        {
-            if (part == null)
-                return "none";
-            return part.partInfo != null ? part.partInfo.name : part.name;
-        }
-
         public static float GetBodyVisibilityMultiplier(
             string bodyName,
             Dictionary<string, float> multipliers,
@@ -271,6 +295,49 @@ namespace KerbalFX
             if (multipliers.TryGetValue(bodyName.Trim(), out m))
                 return Mathf.Clamp(m, min, max);
             return 1f;
+        }
+    }
+
+    internal struct KerbalFxRevisionStamp
+    {
+        private int uiRevision;
+        private int runtimeRevision;
+
+        public bool NeedsApply(int currentUiRevision, int currentRuntimeRevision)
+        {
+            return uiRevision != currentUiRevision || runtimeRevision != currentRuntimeRevision;
+        }
+
+        public bool ShouldSkipApply(bool force, int currentUiRevision, int currentRuntimeRevision)
+        {
+            return !force && !NeedsApply(currentUiRevision, currentRuntimeRevision);
+        }
+
+        public void MarkApplied(int currentUiRevision, int currentRuntimeRevision)
+        {
+            uiRevision = currentUiRevision;
+            runtimeRevision = currentRuntimeRevision;
+        }
+    }
+
+    internal struct KerbalFxVesselPartSnapshot
+    {
+        private int partCount;
+        private uint partSignature;
+
+        public bool HasChanged(Vessel vessel)
+        {
+            if (vessel == null || vessel.parts == null)
+                return true;
+
+            return vessel.parts.Count != partCount
+                || KerbalFxUtil.ComputeVesselPartSignature(vessel) != partSignature;
+        }
+
+        public void Capture(Vessel vessel)
+        {
+            partCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
+            partSignature = vessel != null ? KerbalFxUtil.ComputeVesselPartSignature(vessel) : 0u;
         }
     }
 
@@ -395,6 +462,161 @@ namespace KerbalFX
             double radius = body.Radius;
             double perpSq = toCenter.sqrMagnitude - (double)projection * projection;
             return perpSq <= radius * radius;
+        }
+
+        public static float GetVesselSunFactor(Vessel vessel, float shadowFloor)
+        {
+            if (vessel == null)
+                return 1f;
+            return vessel.directSunlight ? 1f : Mathf.Clamp01(shadowFloor);
+        }
+
+        public static float GetBodyDaylightFactor(
+            Vessel vessel,
+            Vector3 worldPoint,
+            Vector3 bodyUp,
+            float daylightFloor,
+            float shadowFloor)
+        {
+            if (vessel != null && vessel.directSunlight)
+                return 1f;
+
+            Vector3 sunDirection;
+            if (!TryGetSunDirection(worldPoint, out sunDirection))
+                return 1f;
+
+            if (vessel != null
+                && vessel.mainBody != null
+                && IsSunOccludedByBody(vessel.mainBody, worldPoint, sunDirection))
+            {
+                return Mathf.Clamp01(shadowFloor);
+            }
+
+            Vector3 up = bodyUp.sqrMagnitude > 0.0001f
+                ? bodyUp.normalized
+                : Vector3.up;
+
+            float sunHeight = Mathf.Clamp01(Vector3.Dot(up, sunDirection));
+            float daylight = Mathf.Pow(sunHeight, 0.42f);
+            return Mathf.Lerp(Mathf.Clamp01(daylightFloor), 1f, daylight);
+        }
+    }
+
+    internal sealed class KerbalFxLog
+    {
+        private const string Prefix = "[KerbalFX] ";
+        private readonly System.Func<bool> debugEnabled;
+
+        public KerbalFxLog(System.Func<bool> debugEnabled)
+        {
+            this.debugEnabled = debugEnabled;
+        }
+
+        public void Info(string message)
+        {
+            Debug.Log(Prefix + message);
+        }
+
+        public void DebugLog(string message)
+        {
+            if (debugEnabled != null && debugEnabled())
+                Debug.Log(Prefix + message);
+        }
+
+        public void DebugException(string scope, System.Exception ex)
+        {
+            if (ex == null || debugEnabled == null || !debugEnabled())
+                return;
+            Debug.Log(Prefix + scope + " failed: " + ex.Message);
+        }
+    }
+
+    internal sealed class KerbalFxBodyVisibilityProfile
+    {
+        private readonly string configNodeName;
+        private readonly System.Func<string> pathProvider;
+        private readonly System.Action<Dictionary<string, float>> seedDefaults;
+        private readonly float minMult;
+        private readonly float maxMult;
+        private readonly Dictionary<string, float> multipliers;
+        private System.DateTime lastConfigWriteUtc = System.DateTime.MinValue;
+
+        public KerbalFxBodyVisibilityProfile(
+            string configNodeName,
+            System.Func<string> pathProvider,
+            System.Action<Dictionary<string, float>> seedDefaults,
+            float minMult,
+            float maxMult)
+        {
+            this.configNodeName = configNodeName;
+            this.pathProvider = pathProvider;
+            this.seedDefaults = seedDefaults;
+            this.minMult = minMult;
+            this.maxMult = maxMult;
+            this.multipliers = new Dictionary<string, float>(16, System.StringComparer.OrdinalIgnoreCase);
+        }
+
+        public int Count { get { return multipliers.Count; } }
+
+        public void Refresh()
+        {
+            SeedDefaults();
+            if (GameDatabase.Instance != null)
+            {
+                ConfigNode[] nodes = GameDatabase.Instance.GetConfigNodes(configNodeName);
+                if (nodes != null)
+                    for (int i = 0; i < nodes.Length; i++)
+                        if (nodes[i] != null)
+                            KerbalFxUtil.LoadBodyVisibility(nodes[i], multipliers, minMult, maxMult);
+            }
+            KerbalFxUtil.PrimeConfigFileStamp(GetPath(), ref lastConfigWriteUtc);
+        }
+
+        public bool TryHotReloadFromDisk(out string failure)
+        {
+            failure = null;
+            string path = GetPath();
+            if (!KerbalFxUtil.HasConfigFileChanged(path, ref lastConfigWriteUtc))
+                return false;
+
+            SeedDefaults();
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
+                {
+                    ConfigNode root = ConfigNode.Load(path);
+                    if (root != null)
+                    {
+                        ConfigNode[] nodes = root.GetNodes(configNodeName);
+                        if (nodes != null)
+                            for (int i = 0; i < nodes.Length; i++)
+                                if (nodes[i] != null)
+                                    KerbalFxUtil.LoadBodyVisibility(nodes[i], multipliers, minMult, maxMult);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                failure = ex.Message;
+            }
+            return true;
+        }
+
+        public float Get(string bodyName)
+        {
+            return KerbalFxVesselUtil.GetBodyVisibilityMultiplier(bodyName, multipliers, minMult, maxMult);
+        }
+
+        private string GetPath()
+        {
+            return pathProvider != null ? pathProvider() : null;
+        }
+
+        private void SeedDefaults()
+        {
+            multipliers.Clear();
+            if (seedDefaults != null)
+                seedDefaults(multipliers);
         }
     }
 }
