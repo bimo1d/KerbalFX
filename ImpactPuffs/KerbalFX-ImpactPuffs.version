@@ -1,6 +1,6 @@
 ﻿{
   "NAME": "KerbalFX-ImpactPuffs",
-  "URL": "https://github.com/bimo1d/KerbalFX",
+  "URL": "https://github.com/bimo1d/KerbalFX/raw/refs/heads/main/ImpactPuffs/KerbalFX-ImpactPuffs.version",
   "DOWNLOAD": "https://github.com/bimo1d/KerbalFX/releases",
   "VERSION": {
     "MAJOR": 0,
@@ -19,4 +19,3 @@
     "PATCH": 99
   }
 }
-
