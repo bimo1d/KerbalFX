@@ -1,11 +1,11 @@
 {
   "NAME": "KerbalFX-BlastFX",
-  "URL": "https://github.com/bimo1d/KerbalFX/raw/refs/heads/main/BlastFX/KerbalFX-BlastFX.version",
+  "URL": "https://raw.githubusercontent.com/bimo1d/KerbalFX/main/BlastFX/KerbalFX-BlastFX.version",
   "DOWNLOAD": "https://github.com/bimo1d/KerbalFX/releases",
   "VERSION": {
     "MAJOR": 0,
     "MINOR": 7,
-    "PATCH": 0,
+    "PATCH": 1,
     "BUILD": 0
   },
   "KSP_VERSION_MIN": {

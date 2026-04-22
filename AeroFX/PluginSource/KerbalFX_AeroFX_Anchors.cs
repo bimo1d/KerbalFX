@@ -183,7 +183,8 @@ namespace KerbalFX.AeroFX
             "bicoupler",
             "dock",
             "lander",
-            "dronecore"
+            "dronecore",
+            "rcs"
         };
 
         private static readonly WingtipAnchorRole[] SecondaryRoleOrder =
@@ -217,6 +218,7 @@ namespace KerbalFX.AeroFX
         private static Vector3 cachedForwardAxis;
         private static Vector3 cachedRightAxis;
         private static Vector3 cachedCenterOfMass;
+        private static bool useFastAnchorScan = true;
 
         private static readonly List<Candidate> allCandidates = new List<Candidate>(32);
         private static readonly List<Candidate> selectedCandidates = new List<Candidate>(8);
@@ -241,6 +243,7 @@ namespace KerbalFX.AeroFX
             Vessel vessel,
             WingtipRibbonAnchor[] results,
             int maxResults,
+            bool fastAnchorScan,
             out int liftPartCount,
             out int candidateCount,
             out string candidateSummary)
@@ -269,6 +272,7 @@ namespace KerbalFX.AeroFX
             cachedForwardAxis = forward;
             cachedRightAxis = rightAxis;
             cachedCenterOfMass = vessel.CoM;
+            useFastAnchorScan = fastAnchorScan;
 
             int resultLimit = Mathf.Clamp(maxResults, 1, results.Length);
             Vector3 centerOfMass = vessel.CoM;
@@ -294,7 +298,14 @@ namespace KerbalFX.AeroFX
                 Vector3 offset = boundsCenter - centerOfMass;
                 Vector3 radialOffset = Vector3.ProjectOnPlane(offset, forward);
                 if (radialOffset.magnitude < 0.20f)
-                    continue;
+                {
+                    if (!useFastAnchorScan)
+                        continue;
+
+                    float radialReach = Mathf.Max(GetBoundsReach(bounds, rightAxis), GetBoundsReach(bounds, upAxis));
+                    if (radialOffset.magnitude + radialReach < 0.20f)
+                        continue;
+                }
 
                 Vector3 supportPoint;
                 Vector3 outward;
@@ -1204,12 +1215,6 @@ namespace KerbalFX.AeroFX
                 return false;
 
             if (KerbalFxUtil.ContainsAnyToken(name, DenyTokens))
-                return false;
-
-            bool hasControlSurface = part.FindModuleImplementing<ModuleControlSurface>() != null;
-            bool hasLiftSurface = part.FindModuleImplementing<ModuleLiftingSurface>() != null
-                || part.FindModuleImplementing<ModuleAeroSurface>() != null;
-            if (!hasControlSurface && !hasLiftSurface)
                 return false;
 
             return TryClassifyRoleFromName(name, out role);

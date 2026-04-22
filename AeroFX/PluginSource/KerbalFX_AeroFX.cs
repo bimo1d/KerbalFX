@@ -15,6 +15,10 @@ namespace KerbalFX.AeroFX
         public const string UiEnableTip = "#LOC_KerbalFX_AeroFX_UI_Enable_TT";
         public const string UiRibbonCap = "#LOC_KerbalFX_AeroFX_UI_RibbonCap";
         public const string UiRibbonCapTip = "#LOC_KerbalFX_AeroFX_UI_RibbonCap_TT";
+        public const string UiMachThresholdMode = "#LOC_KerbalFX_AeroFX_UI_MachThresholdMode";
+        public const string UiMachThresholdModeTip = "#LOC_KerbalFX_AeroFX_UI_MachThresholdMode_TT";
+        public const string UiFastAnchorScan = "#LOC_KerbalFX_AeroFX_UI_FastAnchorScan";
+        public const string UiFastAnchorScanTip = "#LOC_KerbalFX_AeroFX_UI_FastAnchorScan_TT";
         public const string UiLightAware = "#LOC_KerbalFX_AeroFX_UI_LightAware";
         public const string UiLightAwareTip = "#LOC_KerbalFX_AeroFX_UI_LightAware_TT";
         public const string UiManeuverOnly = "#LOC_KerbalFX_AeroFX_UI_ManeuverOnly";
@@ -55,6 +59,19 @@ namespace KerbalFX.AeroFX
         )]
         public int maxRibbonCount = 4;
 
+        [GameParameters.CustomIntParameterUI(
+            AeroFxLoc.UiMachThresholdMode,
+            toolTip = AeroFxLoc.UiMachThresholdModeTip,
+            minValue = 0,
+            maxValue = 3,
+            stepSize = 1,
+            displayFormat = "N0"
+        )]
+        public int machThresholdMode = 0;
+
+        [GameParameters.CustomParameterUI(AeroFxLoc.UiFastAnchorScan, toolTip = AeroFxLoc.UiFastAnchorScanTip)]
+        public bool fastAnchorScan = false;
+
         [GameParameters.CustomParameterUI(AeroFxLoc.UiLightAware, toolTip = AeroFxLoc.UiLightAwareTip)]
         public bool useLightAware = true;
 
@@ -76,6 +93,8 @@ namespace KerbalFX.AeroFX
     {
         public static bool Enabled = true;
         public static int MaxRibbonCount = 4;
+        public static int MachThresholdMode;
+        public static bool FastAnchorScan;
         public static bool UseLightAware = true;
         public static bool UseManeuverOnly;
         public static bool DebugLogging;
@@ -87,6 +106,8 @@ namespace KerbalFX.AeroFX
         {
             bool newEnabled = true;
             int newMaxRibbonCount = 4;
+            int newMachThresholdMode = 0;
+            bool newFastAnchorScan = false;
             bool newUseLightAware = true;
             bool newUseManeuverOnly = false;
             bool newDebug = false;
@@ -98,6 +119,8 @@ namespace KerbalFX.AeroFX
                 {
                     newEnabled = p.enableAeroFx;
                     newMaxRibbonCount = Mathf.Clamp(p.maxRibbonCount, 2, 6);
+                    newMachThresholdMode = Mathf.Clamp(p.machThresholdMode, 0, 3);
+                    newFastAnchorScan = p.fastAnchorScan;
                     newUseLightAware = p.useLightAware;
                     newUseManeuverOnly = p.maneuverOnly;
                     newDebug = p.debugLogging;
@@ -107,12 +130,16 @@ namespace KerbalFX.AeroFX
             bool changed = !initialized
                 || newEnabled != Enabled
                 || newMaxRibbonCount != MaxRibbonCount
+                || newMachThresholdMode != MachThresholdMode
+                || newFastAnchorScan != FastAnchorScan
                 || newUseLightAware != UseLightAware
                 || newUseManeuverOnly != UseManeuverOnly
                 || newDebug != DebugLogging;
 
             Enabled = newEnabled;
             MaxRibbonCount = newMaxRibbonCount;
+            MachThresholdMode = newMachThresholdMode;
+            FastAnchorScan = newFastAnchorScan;
             UseLightAware = newUseLightAware;
             UseManeuverOnly = newUseManeuverOnly;
             DebugLogging = newDebug;
@@ -125,6 +152,8 @@ namespace KerbalFX.AeroFX
                     AeroFxLoc.LogSettingsUpdated,
                     Enabled,
                     MaxRibbonCount,
+                    MachThresholdMode,
+                    FastAnchorScan,
                     UseLightAware,
                     UseManeuverOnly,
                     DebugLogging));
@@ -144,6 +173,7 @@ namespace KerbalFX.AeroFX
         public const float FullDynamicPressure = 65.0f;
         public const float MinMach = 0.22f;
         public const float FullMach = 0.92f;
+        public const float MachThresholdFadeRange = 0.12f;
         public const float MinLoadFactor = 1.02f;
         public const float FullLoadFactor = 3.60f;
         public const float TrailTimeMin = 1.02f;
@@ -195,6 +225,21 @@ namespace KerbalFX.AeroFX
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
             return bodyProfile.Get(bodyName);
+        }
+
+        public static float GetMachThreshold(int mode)
+        {
+            switch (mode)
+            {
+                case 1:
+                    return 0.45f;
+                case 2:
+                    return 1.00f;
+                case 3:
+                    return 1.45f;
+                default:
+                    return -1f;
+            }
         }
 
         private static void SeedDefaultBodyVisibility(Dictionary<string, float> dict)

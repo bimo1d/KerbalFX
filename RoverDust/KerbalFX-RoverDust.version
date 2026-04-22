@@ -1,11 +1,11 @@
 ﻿{
   "NAME": "KerbalFX-RoverDust",
-  "URL": "https://github.com/bimo1d/KerbalFX/raw/refs/heads/main/RoverDust/KerbalFX-RoverDust.version",
+  "URL": "https://raw.githubusercontent.com/bimo1d/KerbalFX/main/RoverDust/KerbalFX-RoverDust.version",
   "DOWNLOAD": "https://github.com/bimo1d/KerbalFX/releases",
   "VERSION": {
     "MAJOR": 0,
     "MINOR": 7,
-    "PATCH": 0,
+    "PATCH": 1,
     "BUILD": 0
   },
   "KSP_VERSION_MIN": {

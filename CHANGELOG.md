@@ -1,3 +1,8 @@
+## 0.7.1
+- Fixed **AeroFX** anchor detection compatibility with FAR-style aero module replacements while keeping cockpit/body false-positive filters.
+- Added **AeroFX** minimum activation `Mach` mode for delaying ribbon activation to higher `Mach` ranges.
+- Added **AeroFX** fast anchor scan mode that avoids per-vertex mesh scans and uses filtered renderer bounds for lower CPU cost on large or heavily modded vessels.
+
 ## 0.7
 - Split KerbalFX into a shared `Core` runtime plus independent separate module DLLs for `AeroFX`, `BlastFX`, `Impact Puffs`, and `Rover Dust`.
 - Fixed **Impact Puffs** handling for single-part multi-nozzle engines so one `ModuleEngines` with multiple thrust transforms uses one plume-ground emitter instead of duplicating full-thrust effects per nozzle.

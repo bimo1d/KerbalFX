@@ -175,6 +175,7 @@ namespace KerbalFX.AeroFX
                 vessel,
                 resolvedAnchors,
                 maxRibbonCount,
+                AeroFxConfig.FastAnchorScan,
                 out lastLiftPartCount,
                 out lastCandidateCount,
                 out lastCandidateSummary);
@@ -222,12 +223,13 @@ namespace KerbalFX.AeroFX
                 if (partStillExists && resultCount < maxRibbonCount)
                 {
                     float grace = emitterGraceTimers[j] + AeroFxRuntimeConfig.AnchorRefreshInterval;
-                    if (grace < EmitterGraceSeconds)
+                    if (grace <= EmitterGraceSeconds)
                     {
                         rebuildAnchors[resultCount] = anchors[j];
                         rebuildEmitters[resultCount] = emitters[j];
                         rebuildGraceTimers[resultCount] = grace;
-                        rebuildEmitters[resultCount].StopEmission();
+                        if (!AeroFxConfig.FastAnchorScan)
+                            rebuildEmitters[resultCount].StopEmission();
                         resultCount++;
                         continue;
                     }
@@ -385,8 +387,13 @@ namespace KerbalFX.AeroFX
             float visibilityBias = Mathf.Lerp(0.62f, 1.12f, Mathf.Max(load01, mach01 * 0.70f));
             float activation = Mathf.Clamp01(baseCondense * speedBias * maneuverBias * nearGroundBias * visibilityBias);
             float speedActivationGate = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(50f, 85f, speed));
+            float machThreshold = AeroFxRuntimeConfig.GetMachThreshold(AeroFxConfig.MachThresholdMode);
+            float machThresholdGate = machThreshold > 0f
+                ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(machThreshold, machThreshold + AeroFxRuntimeConfig.MachThresholdFadeRange, mach))
+                : 1f;
             float bodyVisibility = AeroFxRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
             activation *= speedActivationGate;
+            activation *= machThresholdGate;
             activation *= bodyVisibility;
             if (AeroFxConfig.UseManeuverOnly)
             {
