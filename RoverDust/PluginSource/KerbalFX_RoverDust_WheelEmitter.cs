@@ -233,6 +233,9 @@ namespace KerbalFX.RoverDust
             float bodySizeScale = Mathf.Lerp(1f, 1.16f, bodyBoostNorm);
             advancedQualityFeatures = qualityPercent >= 100;
             wheelEffectiveRadius = GetEffectiveWheelRadius(wheel, part);
+            float wheelVisualScale = GetWheelVisualScale(wheelEffectiveRadius);
+            float wheelLifetimeScale = Mathf.Lerp(0.96f, 1.22f, Mathf.InverseLerp(0.18f, 1.15f, wheelEffectiveRadius));
+            float wheelSpeedScale = Mathf.Lerp(0.95f, 1.16f, Mathf.InverseLerp(0.18f, 1.15f, wheelEffectiveRadius));
             wheelDustRateScale = advancedQualityFeatures ? GetWheelDustRateScale(wheelEffectiveRadius) : 1f;
             if (!advancedQualityFeatures)
                 cachedLightFactor = 1f;
@@ -241,14 +244,14 @@ namespace KerbalFX.RoverDust
             float maxParticlesBase = 760f * qualityParticleScale * RoverDustRuntimeConfig.MaxParticlesMultiplier;
             main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticlesBase * wheelDustRateScale * bodyParticleScale, 220f, 4600f));
 
-            float minSize = 0.036f * qualitySizeScale * bodySizeScale;
-            float maxSize = 0.102f * qualitySizeScale * bodySizeScale;
+            float minSize = 0.036f * qualitySizeScale * bodySizeScale * wheelVisualScale;
+            float maxSize = 0.102f * qualitySizeScale * bodySizeScale * wheelVisualScale;
             main.startSize = new ParticleSystem.MinMaxCurve(minSize, maxSize);
 
-            float minLifetime = 0.21f * Mathf.Lerp(0.98f, 1.18f, qualityNorm);
-            float maxLifetime = 0.64f * Mathf.Lerp(0.98f, 1.20f, qualityNorm);
+            float minLifetime = 0.21f * Mathf.Lerp(0.98f, 1.18f, qualityNorm) * wheelLifetimeScale;
+            float maxLifetime = 0.64f * Mathf.Lerp(0.98f, 1.20f, qualityNorm) * wheelLifetimeScale;
             main.startLifetime = new ParticleSystem.MinMaxCurve(minLifetime, maxLifetime);
-            main.startSpeed = new ParticleSystem.MinMaxCurve(0.60f, Mathf.Lerp(1.9f, 3.4f, qualityNorm));
+            main.startSpeed = new ParticleSystem.MinMaxCurve(0.60f * wheelSpeedScale, Mathf.Lerp(1.9f, 3.4f, qualityNorm) * wheelSpeedScale);
             main.gravityModifier = Mathf.Lerp(0.014f, 0.024f, qualityNorm);
 
             ParticleSystem.ShapeModule shape = particleSystem.shape;
@@ -270,7 +273,7 @@ namespace KerbalFX.RoverDust
             }
 
             ParticleSystemRenderer renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
-            renderer.maxParticleSize = Mathf.Lerp(0.11f, 0.19f, qualityNorm);
+            renderer.maxParticleSize = Mathf.Clamp(Mathf.Lerp(0.11f, 0.19f, qualityNorm) * Mathf.Lerp(0.98f, 1.12f, wheelVisualScale - 1f), 0.11f, 0.24f);
             ApplyCurrentStartColor();
 
             ParticleSystem.EmissionModule emission = particleSystem.emission;
@@ -671,6 +674,12 @@ namespace KerbalFX.RoverDust
             float baseScale = Mathf.Pow(normalized, RoverDustRuntimeConfig.WheelBoostPower);
             float amplifiedScale = 1f + (baseScale - 1f) * 1.25f;
             return Mathf.Clamp(amplifiedScale, 1f, RoverDustRuntimeConfig.WheelBoostMax * 1.25f);
+        }
+
+        private static float GetWheelVisualScale(float effectiveRadius)
+        {
+            float visualNorm = Mathf.InverseLerp(0.18f, 1.15f, effectiveRadius);
+            return Mathf.Clamp(Mathf.Lerp(0.92f, 1.72f, visualNorm), 0.90f, 1.80f);
         }
 
         private static float GetEffectiveWheelRadius(WheelCollider wheelCollider, Part sourcePart)
