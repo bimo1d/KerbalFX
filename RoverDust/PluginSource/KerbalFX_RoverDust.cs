@@ -270,6 +270,7 @@ namespace KerbalFX.RoverDust
     {
         private readonly Vessel vessel;
         private readonly List<WheelDustEmitter> emitters = new List<WheelDustEmitter>();
+        private readonly List<WheelEmitterSpec> emitterSpecs = new List<WheelEmitterSpec>();
         private KerbalFxVesselPartSnapshot partSnapshot;
 
         public int EmitterCount { get { return emitters.Count; } }
@@ -331,6 +332,7 @@ namespace KerbalFX.RoverDust
         private void RebuildEmitters()
         {
             DisposeEmitters();
+            emitterSpecs.Clear();
             partSnapshot.Capture(vessel);
             if (vessel == null || vessel.parts == null)
                 return;
@@ -344,18 +346,24 @@ namespace KerbalFX.RoverDust
                     continue;
 
                 wheelPartCount++;
-                AddPartEmitters(part, colliders);
+                AddPartEmitterSpecs(part, colliders);
             }
+
+            float vesselBudgetScale = GetVesselEmitterBudgetScale(emitterSpecs.Count);
+            for (int i = 0; i < emitterSpecs.Count; i++)
+                emitters.Add(new WheelDustEmitter(emitterSpecs[i].Part, emitterSpecs[i].Wheels, vesselBudgetScale));
 
             LogVesselScan(wheelPartCount);
         }
 
-        private void AddPartEmitters(Part part, WheelCollider[] colliders)
+        private void AddPartEmitterSpecs(Part part, WheelCollider[] colliders)
         {
-            for (int i = 0; i < colliders.Length; i++)
+            List<WheelCollider[]> clusters = BuildWheelClusters(part, colliders);
+            for (int i = 0; i < clusters.Count; i++)
             {
-                if (colliders[i] != null)
-                    emitters.Add(new WheelDustEmitter(part, colliders[i]));
+                WheelCollider[] cluster = clusters[i];
+                if (cluster != null && cluster.Length > 0)
+                    emitterSpecs.Add(new WheelEmitterSpec(part, cluster));
             }
         }
 
@@ -380,6 +388,125 @@ namespace KerbalFX.RoverDust
                 return false;
             colliders = part.GetComponentsInChildren<WheelCollider>(true);
             return colliders != null && colliders.Length > 0;
+        }
+
+        private static float GetVesselEmitterBudgetScale(int emitterCount)
+        {
+            if (emitterCount <= 4)
+                return 1f;
+
+            float norm = Mathf.InverseLerp(4f, 10f, emitterCount);
+            return Mathf.Lerp(1f, 0.52f, norm);
+        }
+
+        private static List<WheelCollider[]> BuildWheelClusters(Part part, WheelCollider[] colliders)
+        {
+            List<WheelCollider[]> result = new List<WheelCollider[]>();
+            if (part == null || colliders == null || colliders.Length == 0)
+                return result;
+
+            List<WheelCluster> clusters = new List<WheelCluster>();
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                WheelCollider collider = colliders[i];
+                if (collider == null || collider.transform == null)
+                    continue;
+
+                Vector3 localPos = part.transform.InverseTransformPoint(collider.transform.position);
+                float radius = GetClusterWheelRadius(collider);
+                bool attached = false;
+
+                for (int c = 0; c < clusters.Count; c++)
+                {
+                    if (!clusters[c].TryAdd(collider, localPos, radius))
+                        continue;
+
+                    attached = true;
+                    break;
+                }
+
+                if (!attached)
+                    clusters.Add(new WheelCluster(collider, localPos, radius));
+            }
+
+            for (int i = 0; i < clusters.Count; i++)
+                result.Add(clusters[i].ToArray());
+
+            return result;
+        }
+
+        private static float GetClusterWheelRadius(WheelCollider collider)
+        {
+            if (collider == null)
+                return 0.15f;
+
+            float radius = Mathf.Max(0.05f, collider.radius);
+            if (collider.transform != null)
+            {
+                Vector3 scale = collider.transform.lossyScale;
+                float axisScale = Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z));
+                if (axisScale > 0.001f)
+                    radius = Mathf.Max(radius, collider.radius * axisScale);
+            }
+
+            return Mathf.Clamp(radius, 0.05f, 2.4f);
+        }
+
+        private sealed class WheelCluster
+        {
+            private readonly List<WheelCollider> wheels = new List<WheelCollider>();
+            private Vector3 center;
+            private Vector3 min;
+            private Vector3 max;
+            private float maxRadius;
+
+            public WheelCluster(WheelCollider collider, Vector3 localPos, float radius)
+            {
+                wheels.Add(collider);
+                center = localPos;
+                min = localPos;
+                max = localPos;
+                maxRadius = radius;
+            }
+
+            public bool TryAdd(WheelCollider collider, Vector3 localPos, float radius)
+            {
+                float joinDistance = Mathf.Max(maxRadius, radius) * 2.60f;
+                if (Vector3.Distance(localPos, center) > joinDistance)
+                    return false;
+
+                Vector3 newMin = Vector3.Min(min, localPos);
+                Vector3 newMax = Vector3.Max(max, localPos);
+                Vector3 span = newMax - newMin;
+                float maxSpan = Mathf.Max(span.x, Mathf.Max(span.y, span.z));
+                float compactLimit = Mathf.Max(maxRadius, radius) * 3.60f;
+                if (maxSpan > compactLimit)
+                    return false;
+
+                wheels.Add(collider);
+                min = newMin;
+                max = newMax;
+                maxRadius = Mathf.Max(maxRadius, radius);
+                center = (center * (wheels.Count - 1) + localPos) / wheels.Count;
+                return true;
+            }
+
+            public WheelCollider[] ToArray()
+            {
+                return wheels.ToArray();
+            }
+        }
+
+        private sealed class WheelEmitterSpec
+        {
+            public readonly Part Part;
+            public readonly WheelCollider[] Wheels;
+
+            public WheelEmitterSpec(Part part, WheelCollider[] wheels)
+            {
+                Part = part;
+                Wheels = wheels;
+            }
         }
     }
 }

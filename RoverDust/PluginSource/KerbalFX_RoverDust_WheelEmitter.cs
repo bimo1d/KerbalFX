@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using KSP.Localization;
 using UnityEngine;
 
@@ -9,10 +10,12 @@ namespace KerbalFX.RoverDust
     internal sealed class WheelDustEmitter
     {
         private readonly Part part;
-        private readonly WheelCollider wheel;
+        private readonly WheelCollider[] wheels;
         private readonly GameObject root;
         private readonly ParticleSystem particleSystem;
         private readonly string debugId;
+        private readonly int wheelGroupCount;
+        private readonly float vesselEmitterBudgetScale;
 
         private float smoothedRate;
         private float debugTimer;
@@ -21,10 +24,16 @@ namespace KerbalFX.RoverDust
         private float cachedLightFactor = 1f;
         private float wheelDustRateScale = 1f;
         private float wheelEffectiveRadius = 0.35f;
+        private float wheelVisualScaleDebug = 1f;
+        private float wheelVisualFootprintScale = 1f;
+        private float wheelVisualFootprintRadius;
+        private float continuityDistanceRemainder;
+        private Vector3 lastContinuityPoint;
         private bool advancedQualityFeatures;
         private bool disposed;
         private bool colorInitialized;
         private bool lastSuppressed;
+        private bool hasLastContinuityPoint;
         private KerbalFxRevisionStamp appliedProfileRevision;
         private string lastSuppressionKey = string.Empty;
         private int lastSurfaceColliderId = int.MinValue;
@@ -47,7 +56,6 @@ namespace KerbalFX.RoverDust
         private static readonly string[] KscMaterialTokens = { "runway", "launchpad", "crawlerway" };
         private static readonly string[] KerbalKonstructsTokens = { "kerbalkonstructs", "staticobject" };
         private static readonly string[] LampTokens = { "headlamp", "headlight", "floodlight", "spotlight", "searchlight", "lamp", "projector" };
-        private static readonly string[] WheelLikeTokens = { "wheel", "tire", "track", "bogie", "roller" };
         private static readonly List<Light> sharedSceneLights = new List<Light>();
         private static readonly List<Component> sharedComponentBuffer = new List<Component>(24);
         private static float sharedSceneLightsRefreshAt;
@@ -61,15 +69,17 @@ namespace KerbalFX.RoverDust
         private static float cachedGradientQualityNorm = -1f;
         private static float cachedSizeCurveQuality = -1f;
 
-        public WheelDustEmitter(Part part, WheelCollider wheel)
+        public WheelDustEmitter(Part part, WheelCollider[] wheels, float vesselEmitterBudgetScale)
         {
             this.part = part;
-            this.wheel = wheel;
-            debugId = (part.partInfo != null ? part.partInfo.name : part.name) + ":" + wheel.name;
+            this.wheels = wheels ?? new WheelCollider[0];
+            this.vesselEmitterBudgetScale = Mathf.Clamp(vesselEmitterBudgetScale, 0.40f, 1f);
+            wheelGroupCount = GetActiveWheelColliderCount(this.wheels);
+            debugId = (part.partInfo != null ? part.partInfo.name : part.name) + ":wheelGroup";
 
             root = new GameObject("RoverDustFXEmitter");
             root.transform.parent = part.transform;
-            root.transform.position = wheel.transform.position;
+            root.transform.position = GetWheelGroupCenter(part, this.wheels);
             root.layer = part.gameObject.layer;
 
             particleSystem = root.AddComponent<ParticleSystem>();
@@ -79,7 +89,7 @@ namespace KerbalFX.RoverDust
 
         public void Tick(Vessel vessel, float dt)
         {
-            if (disposed || wheel == null || part == null)
+            if (disposed || part == null || wheels == null || wheels.Length == 0)
                 return;
 
             if (appliedProfileRevision.NeedsApply(RoverDustConfig.Revision, RoverDustRuntimeConfig.Revision))
@@ -87,22 +97,27 @@ namespace KerbalFX.RoverDust
                 ApplyRuntimeVisualProfile(false);
             }
 
-            WheelHit hit;
-            bool hasHit = wheel.GetGroundHit(out hit) && hit.collider != null;
+            WheelHit surfaceHit;
+            Vector3 hitPoint;
+            Vector3 hitNormal;
+            float slip;
+            bool hasHit = TryGetWheelGroupHit(out surfaceHit, out hitPoint, out hitNormal, out slip);
             if (!hasHit)
             {
+                ResetContinuityTrail();
                 SetTargetRate(0f, dt);
                 return;
             }
 
             string suppressionKey;
-            bool suppressed = ShouldSuppressDustSurface(hit.collider, out suppressionKey);
+            bool suppressed = ShouldSuppressDustSurface(surfaceHit.collider, out suppressionKey);
             if (suppressed)
             {
                 if ((!lastSuppressed || suppressionKey != lastSuppressionKey) && RoverDustConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
                     RoverDustLog.DebugLog(Localizer.Format(RoverDustLoc.LogSuppressed, debugId, suppressionKey));
                 lastSuppressed = true;
                 lastSuppressionKey = suppressionKey;
+                ResetContinuityTrail();
                 SetTargetRate(0f, dt);
                 return;
             }
@@ -111,8 +126,6 @@ namespace KerbalFX.RoverDust
             lastSuppressionKey = string.Empty;
 
             float speed = Mathf.Abs((float)vessel.srfSpeed);
-            float slip = Mathf.Abs(hit.forwardSlip) + Mathf.Abs(hit.sidewaysSlip);
-
             float speedFactor = Mathf.InverseLerp(MinDustSpeed, 20f, speed);
             float slipBoost = Mathf.Clamp01(slip * SlipBoostScale);
 
@@ -120,11 +133,12 @@ namespace KerbalFX.RoverDust
             float qualityRateScale = 1f + (Mathf.Pow(quality, 1.60f) - 1f) * 0.75f;
             float bodyVisibility = GetBodyDustVisibilityMultiplier(vessel);
             float baseRate = (BaseRateMin + BaseRateRange * speedFactor) * (0.45f + 0.55f * slipBoost) * RoverDustRuntimeConfig.EmissionMultiplier;
-            float targetRate = baseRate * qualityRateScale * wheelDustRateScale * bodyVisibility;
+            float targetRate = baseRate * qualityRateScale * wheelDustRateScale * bodyVisibility
+                * GetWheelClusterRateScale() * GetWheelVisualRateScale() * vesselEmitterBudgetScale;
             bool useLightAware = advancedQualityFeatures && RoverDustConfig.UseLightAware;
 
-            Vector3 stableNormal = GetStableGroundNormal(vessel, hit.point, hit.normal);
-            RefreshLightingState(vessel, hit.point, stableNormal, dt);
+            Vector3 stableNormal = GetStableGroundNormal(vessel, hitPoint, hitNormal);
+            RefreshLightingState(vessel, hitPoint, stableNormal, dt);
             if (useLightAware)
             {
                 float light = Mathf.Clamp01(cachedLightFactor);
@@ -137,17 +151,22 @@ namespace KerbalFX.RoverDust
             }
 
             if (speed < MinDustSpeed)
+            {
                 targetRate = 0f;
+                ResetContinuityTrail();
+            }
 
             SetTargetRate(targetRate, dt);
-            root.transform.position = hit.point + stableNormal * 0.04f;
-            root.transform.rotation = Quaternion.LookRotation(part.transform.forward, stableNormal);
+            Vector3 emitPosition = hitPoint + stableNormal * 0.04f;
+            root.transform.position = emitPosition;
+            root.transform.rotation = Quaternion.LookRotation(GetDustForward(vessel, stableNormal, surfaceHit.forwardDir), stableNormal);
+            EmitContinuityTrail(emitPosition, stableNormal, targetRate, speed, dt);
 
             colorRefreshTimer -= dt;
             if (colorRefreshTimer <= 0f)
             {
                 colorRefreshTimer = ColorRefreshInterval;
-                UpdateSurfaceColor(vessel, hit);
+                UpdateSurfaceColor(vessel, surfaceHit);
             }
 
             if (RoverDustConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
@@ -164,7 +183,11 @@ namespace KerbalFX.RoverDust
                         currentColor.r.ToString("F2", CultureInfo.InvariantCulture) + "," + currentColor.g.ToString("F2", CultureInfo.InvariantCulture) + "," + currentColor.b.ToString("F2", CultureInfo.InvariantCulture)
                         + " L=" + cachedLightFactor.ToString("F2", CultureInfo.InvariantCulture)
                         + " W=" + wheelDustRateScale.ToString("F2", CultureInfo.InvariantCulture)
+                        + " V=" + wheelVisualScaleDebug.ToString("F2", CultureInfo.InvariantCulture)
+                        + " F=" + wheelVisualFootprintScale.ToString("F2", CultureInfo.InvariantCulture)
+                        + " FR=" + wheelVisualFootprintRadius.ToString("F2", CultureInfo.InvariantCulture)
                         + " R=" + wheelEffectiveRadius.ToString("F2", CultureInfo.InvariantCulture)
+                        + " O=" + vesselEmitterBudgetScale.ToString("F2", CultureInfo.InvariantCulture)
                         + " B=" + bodyVisibility.ToString("F2", CultureInfo.InvariantCulture)));
                 }
             }
@@ -172,6 +195,7 @@ namespace KerbalFX.RoverDust
 
         public void StopEmission()
         {
+            ResetContinuityTrail();
             SetTargetRate(0f, 0.12f);
         }
 
@@ -206,6 +230,9 @@ namespace KerbalFX.RoverDust
             ParticleSystem.ColorOverLifetimeModule colorOverLifetime = particleSystem.colorOverLifetime;
             colorOverLifetime.enabled = true;
 
+            ParticleSystem.VelocityOverLifetimeModule velocityOverLifetime = particleSystem.velocityOverLifetime;
+            velocityOverLifetime.enabled = false;
+
             ParticleSystemRenderer renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
             renderer.renderMode = ParticleSystemRenderMode.Billboard;
             renderer.sortingFudge = 2f;
@@ -232,17 +259,25 @@ namespace KerbalFX.RoverDust
             float bodyParticleScale = Mathf.Lerp(1f, 1.28f, bodyBoostNorm);
             float bodySizeScale = Mathf.Lerp(1f, 1.16f, bodyBoostNorm);
             advancedQualityFeatures = qualityPercent >= 100;
-            wheelEffectiveRadius = GetEffectiveWheelRadius(wheel, part);
-            float wheelVisualScale = GetWheelVisualScale(wheelEffectiveRadius);
-            float wheelLifetimeScale = Mathf.Lerp(0.96f, 1.22f, Mathf.InverseLerp(0.18f, 1.15f, wheelEffectiveRadius));
-            float wheelSpeedScale = Mathf.Lerp(0.95f, 1.16f, Mathf.InverseLerp(0.18f, 1.15f, wheelEffectiveRadius));
+            wheelEffectiveRadius = GetEffectiveWheelGroupRadius(wheels);
+            wheelVisualFootprintScale = EstimateWheelVisualFootprintScale(part, wheels, wheelEffectiveRadius, out wheelVisualFootprintRadius);
+            float wheelVisualNorm = Mathf.InverseLerp(0.18f, 1.15f, wheelEffectiveRadius);
+            float wheelGroupNorm = Mathf.InverseLerp(1f, 6f, wheelGroupCount);
+            float wheelGroupScale = Mathf.Lerp(1f, 1.28f, wheelGroupNorm);
+            float wheelVisualScale = GetWheelVisualScale(wheelVisualNorm) * wheelGroupScale * wheelVisualFootprintScale;
+            wheelVisualScaleDebug = wheelVisualScale;
+            float wheelLifetimeScale = Mathf.Lerp(0.98f, 1.14f, wheelVisualNorm) * Mathf.Lerp(1f, 1.14f, wheelGroupNorm);
+            float wheelSpeedScale = Mathf.Lerp(0.96f, 1.08f, wheelVisualNorm) * Mathf.Lerp(1f, 1.08f, wheelGroupNorm);
+            float wheelClusterRateScale = GetWheelClusterRateScale();
             wheelDustRateScale = advancedQualityFeatures ? GetWheelDustRateScale(wheelEffectiveRadius) : 1f;
             if (!advancedQualityFeatures)
                 cachedLightFactor = 1f;
 
             ParticleSystem.MainModule main = particleSystem.main;
             float maxParticlesBase = 760f * qualityParticleScale * RoverDustRuntimeConfig.MaxParticlesMultiplier;
-            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticlesBase * wheelDustRateScale * bodyParticleScale, 220f, 4600f));
+            float maxParticleBudgetScale = Mathf.Lerp(0.72f, 1f, vesselEmitterBudgetScale);
+            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticlesBase * wheelDustRateScale * bodyParticleScale
+                * wheelClusterRateScale * GetWheelVisualRateScale() * maxParticleBudgetScale, 220f, 4600f));
 
             float minSize = 0.036f * qualitySizeScale * bodySizeScale * wheelVisualScale;
             float maxSize = 0.102f * qualitySizeScale * bodySizeScale * wheelVisualScale;
@@ -255,12 +290,15 @@ namespace KerbalFX.RoverDust
             main.gravityModifier = Mathf.Lerp(0.014f, 0.024f, qualityNorm);
 
             ParticleSystem.ShapeModule shape = particleSystem.shape;
-            shape.angle = Mathf.Lerp(11.5f, 16.5f, qualityNorm);
+            shape.angle = Mathf.Lerp(11.5f, 16.5f, qualityNorm) * Mathf.Lerp(1.00f, 1.14f, wheelGroupNorm);
             float wheelRadiusVisual = wheelEffectiveRadius;
             float radiusScale = advancedQualityFeatures
                 ? Mathf.Clamp(Mathf.Lerp(0.90f, 1.70f, Mathf.InverseLerp(0.22f, 1.05f, wheelRadiusVisual)), 0.90f, 1.80f) * RoverDustRuntimeConfig.RadiusScaleMultiplier
                 : 1f;
-            shape.radius = Mathf.Lerp(0.062f, 0.132f, qualityNorm) * radiusScale * bodySizeScale;
+            float profileShapeRadius = Mathf.Lerp(0.062f, 0.132f, qualityNorm) * radiusScale * bodySizeScale
+                * Mathf.Lerp(1.00f, 1.28f, wheelGroupNorm) * Mathf.Lerp(1f, wheelVisualFootprintScale, 0.85f);
+            float footprintShapeRadius = wheelVisualFootprintRadius > 0.01f ? wheelVisualFootprintRadius * 0.64f : 0f;
+            shape.radius = Mathf.Max(profileShapeRadius, footprintShapeRadius);
 
             ParticleSystem.ColorOverLifetimeModule colorOverLifetime = particleSystem.colorOverLifetime;
             colorOverLifetime.color = GetOrCreateFadeGradient(qualityNorm);
@@ -269,11 +307,11 @@ namespace KerbalFX.RoverDust
             sizeOverLifetime.enabled = quality >= 0.50f;
             if (sizeOverLifetime.enabled)
             {
-                sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, GetOrCreateSizeCurve(quality));
+                sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(Mathf.Lerp(1.00f, 1.20f, wheelGroupNorm), GetOrCreateSizeCurve(quality));
             }
 
             ParticleSystemRenderer renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
-            renderer.maxParticleSize = Mathf.Clamp(Mathf.Lerp(0.11f, 0.19f, qualityNorm) * Mathf.Lerp(0.98f, 1.12f, wheelVisualScale - 1f), 0.11f, 0.24f);
+            renderer.maxParticleSize = Mathf.Clamp(Mathf.Lerp(0.11f, 0.19f, qualityNorm) * Mathf.Lerp(1.00f, 1.16f, wheelGroupNorm), 0.11f, 0.24f);
             ApplyCurrentStartColor();
 
             ParticleSystem.EmissionModule emission = particleSystem.emission;
@@ -286,6 +324,80 @@ namespace KerbalFX.RoverDust
                     RoverDustLoc.LogProfile, debugId, qualityPercent,
                     main.maxParticles, minSize.ToString("F3", CultureInfo.InvariantCulture), maxSize.ToString("F3", CultureInfo.InvariantCulture)));
             }
+        }
+
+        private void EmitContinuityTrail(Vector3 emitPosition, Vector3 stableNormal, float targetRate, float speed, float dt)
+        {
+            if (particleSystem == null || wheelVisualFootprintScale <= 1.02f || targetRate <= 50f || speed < 2.8f || dt <= 0f)
+            {
+                ResetContinuityTrail();
+                return;
+            }
+
+            if (!hasLastContinuityPoint)
+            {
+                lastContinuityPoint = emitPosition;
+                hasLastContinuityPoint = true;
+                continuityDistanceRemainder = 0f;
+                return;
+            }
+
+            Vector3 delta = emitPosition - lastContinuityPoint;
+            float distance = delta.magnitude;
+            if (distance < 0.015f)
+                return;
+
+            if (distance > 6.0f || dt > 0.25f)
+            {
+                lastContinuityPoint = emitPosition;
+                continuityDistanceRemainder = 0f;
+                return;
+            }
+
+            Vector3 travelDir = delta / distance;
+            Vector3 sideDir = Vector3.Cross(stableNormal, travelDir);
+            if (sideDir.sqrMagnitude < 0.0001f)
+                sideDir = Vector3.Cross(stableNormal, Vector3.forward);
+            if (sideDir.sqrMagnitude < 0.0001f)
+                sideDir = Vector3.right;
+            sideDir.Normalize();
+
+            ParticleSystem.ShapeModule shape = particleSystem.shape;
+            float spread = Mathf.Clamp(shape.radius * 0.58f, 0.025f, 0.85f);
+            float visualNorm = Mathf.Clamp01((wheelVisualScaleDebug - 1f) / 2.4f);
+            float speedNorm = Mathf.InverseLerp(3f, 24f, speed);
+            float spacing = Mathf.Lerp(0.26f, 0.115f, Mathf.Max(visualNorm, speedNorm));
+            float distanceUntilNext = spacing - continuityDistanceRemainder;
+            int maxEmit = Mathf.Clamp(Mathf.CeilToInt(targetRate * dt * 0.34f), 1, 18);
+            int emitted = 0;
+
+            while (distanceUntilNext <= distance && emitted < maxEmit)
+            {
+                float t = Mathf.Clamp01(distanceUntilNext / distance);
+                Vector3 position = Vector3.Lerp(lastContinuityPoint, emitPosition, t);
+                position += sideDir * UnityEngine.Random.Range(-spread, spread);
+                position += stableNormal * UnityEngine.Random.Range(0f, 0.035f);
+
+                ParticleSystem.EmitParams emitParams = new ParticleSystem.EmitParams();
+                emitParams.position = position;
+                particleSystem.Emit(emitParams, 1);
+
+                distanceUntilNext += spacing;
+                emitted++;
+            }
+
+            if (distanceUntilNext > distance)
+                continuityDistanceRemainder = spacing - (distanceUntilNext - distance);
+            else
+                continuityDistanceRemainder = 0f;
+
+            lastContinuityPoint = emitPosition;
+        }
+
+        private void ResetContinuityTrail()
+        {
+            hasLastContinuityPoint = false;
+            continuityDistanceRemainder = 0f;
         }
 
         private static Gradient GetOrCreateFadeGradient(float qualityNorm)
@@ -676,13 +788,301 @@ namespace KerbalFX.RoverDust
             return Mathf.Clamp(amplifiedScale, 1f, RoverDustRuntimeConfig.WheelBoostMax * 1.25f);
         }
 
-        private static float GetWheelVisualScale(float effectiveRadius)
+        private static float GetWheelVisualScale(float visualNorm)
         {
-            float visualNorm = Mathf.InverseLerp(0.18f, 1.15f, effectiveRadius);
-            return Mathf.Clamp(Mathf.Lerp(0.92f, 1.72f, visualNorm), 0.90f, 1.80f);
+            return Mathf.Clamp(Mathf.Lerp(0.76f, 3.20f, visualNorm), 0.75f, 3.25f);
         }
 
-        private static float GetEffectiveWheelRadius(WheelCollider wheelCollider, Part sourcePart)
+        private float GetWheelClusterRateScale()
+        {
+            return Mathf.Lerp(1f, 1.42f, Mathf.InverseLerp(1f, 6f, wheelGroupCount));
+        }
+
+        private float GetWheelVisualRateScale()
+        {
+            return Mathf.Lerp(1f, wheelVisualFootprintScale, 0.45f);
+        }
+
+        private static int GetActiveWheelColliderCount(WheelCollider[] colliders)
+        {
+            if (colliders == null || colliders.Length == 0)
+                return 1;
+
+            int count = 0;
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                if (colliders[i] != null)
+                    count++;
+            }
+            return Mathf.Max(1, count);
+        }
+
+        private static Vector3 GetWheelGroupCenter(Part sourcePart, WheelCollider[] colliders)
+        {
+            if (sourcePart == null)
+                return Vector3.zero;
+
+            if (colliders == null || colliders.Length == 0)
+                return sourcePart.transform.position;
+
+            Vector3 sum = Vector3.zero;
+            int count = 0;
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                WheelCollider collider = colliders[i];
+                if (collider == null || collider.transform == null)
+                    continue;
+                sum += collider.transform.position;
+                count++;
+            }
+
+            return count > 0 ? sum / count : sourcePart.transform.position;
+        }
+
+        private static float EstimateWheelVisualFootprintScale(Part sourcePart, WheelCollider[] colliders, float effectiveRadius, out float visualRadius)
+        {
+            visualRadius = 0f;
+            if (sourcePart == null || effectiveRadius <= 0.05f)
+                return 1f;
+            if (!SupportsWheelVisualFootprint(sourcePart))
+                return 1f;
+
+            Vector3 groupCenter = GetWheelGroupCenter(sourcePart, colliders);
+            visualRadius = EstimateWheelModuleVisualRadius(sourcePart, groupCenter);
+            if (visualRadius <= effectiveRadius * 1.12f)
+                return 1f;
+
+            float ratio = Mathf.Clamp(visualRadius / effectiveRadius, 1f, 2.45f);
+            return Mathf.Clamp(Mathf.Lerp(1f, ratio, 0.65f), 1f, 2.0f);
+        }
+
+        private static float EstimateWheelModuleVisualRadius(Part sourcePart, Vector3 groupCenter)
+        {
+            List<Transform> wheelTransforms = new List<Transform>();
+            CollectWheelVisualTransforms(sourcePart, wheelTransforms);
+            if (wheelTransforms.Count == 0)
+                return 0f;
+
+            float best = 0f;
+            for (int i = 0; i < wheelTransforms.Count; i++)
+            {
+                Transform wheelTransform = wheelTransforms[i];
+                if (wheelTransform == null)
+                    continue;
+
+                Renderer[] renderers = wheelTransform.GetComponentsInChildren<Renderer>(true);
+                if (renderers == null || renderers.Length == 0)
+                    continue;
+
+                Bounds bounds = new Bounds();
+                bool initialized = false;
+                for (int r = 0; r < renderers.Length; r++)
+                {
+                    Renderer renderer = renderers[r];
+                    if (renderer == null || renderer is ParticleSystemRenderer)
+                        continue;
+
+                    Bounds rendererBounds = renderer.bounds;
+                    float extent = Mathf.Max(rendererBounds.extents.x, Mathf.Max(rendererBounds.extents.y, rendererBounds.extents.z));
+                    if (extent < 0.03f || extent > 4.5f)
+                        continue;
+
+                    if (!initialized)
+                    {
+                        bounds = rendererBounds;
+                        initialized = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(rendererBounds);
+                    }
+                }
+
+                if (!initialized)
+                    continue;
+
+                float distancePenalty = Mathf.Clamp01(Vector3.Distance(bounds.center, groupCenter) / 3.0f);
+                float visualRadius = Mathf.Max(bounds.extents.x, Mathf.Max(bounds.extents.y, bounds.extents.z));
+                visualRadius *= Mathf.Lerp(1f, 0.65f, distancePenalty);
+                if (visualRadius > best)
+                    best = visualRadius;
+            }
+
+            return best;
+        }
+
+        private static bool SupportsWheelVisualFootprint(Part sourcePart)
+        {
+            if (sourcePart == null || sourcePart.Modules == null)
+                return false;
+
+            for (int i = 0; i < sourcePart.Modules.Count; i++)
+            {
+                PartModule module = sourcePart.Modules[i];
+                if (!KerbalFxUtil.ModuleNameMatches(module, "ModuleWheelBase"))
+                    continue;
+
+                string wheelType = ReadMemberString(module, "wheelType");
+                if (string.Equals(wheelType, "FREE", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static void CollectWheelVisualTransforms(Part sourcePart, List<Transform> target)
+        {
+            if (sourcePart == null || sourcePart.Modules == null || target == null)
+                return;
+
+            for (int i = 0; i < sourcePart.Modules.Count; i++)
+            {
+                PartModule module = sourcePart.Modules[i];
+                if (!KerbalFxUtil.ModuleNameMatches(module, "ModuleWheelBase"))
+                    continue;
+                string wheelType = ReadMemberString(module, "wheelType");
+                if (!string.Equals(wheelType, "FREE", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                Transform runtimeTransform = ReadMemberTransform(module, "wheelTransform");
+                AddUniqueTransform(target, runtimeTransform);
+
+                string wheelTransformName = ReadMemberString(module, "wheelTransformName");
+                if (string.IsNullOrEmpty(wheelTransformName))
+                    continue;
+
+                Transform[] found = sourcePart.FindModelTransforms(wheelTransformName);
+                if (found == null)
+                    continue;
+
+                for (int t = 0; t < found.Length; t++)
+                    AddUniqueTransform(target, found[t]);
+            }
+        }
+
+        private static void AddUniqueTransform(List<Transform> target, Transform transform)
+        {
+            if (target == null || transform == null)
+                return;
+
+            for (int i = 0; i < target.Count; i++)
+            {
+                if (target[i] == transform)
+                    return;
+            }
+
+            target.Add(transform);
+        }
+
+        private static string ReadMemberString(object target, string memberName)
+        {
+            object value = ReadMemberValue(target, memberName);
+            return value != null ? value.ToString() : string.Empty;
+        }
+
+        private static Transform ReadMemberTransform(object target, string memberName)
+        {
+            return ReadMemberValue(target, memberName) as Transform;
+        }
+
+        private static object ReadMemberValue(object target, string memberName)
+        {
+            if (target == null || string.IsNullOrEmpty(memberName))
+                return null;
+
+            Type type = target.GetType();
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            try
+            {
+                FieldInfo field = type.GetField(memberName, Flags);
+                if (field != null)
+                    return field.GetValue(target);
+
+                PropertyInfo property = type.GetProperty(memberName, Flags);
+                if (property != null)
+                    return property.GetValue(target, null);
+            }
+            catch
+            {
+            }
+
+            return null;
+        }
+
+        private Vector3 GetDustForward(Vessel vessel, Vector3 stableNormal, Vector3 wheelForward)
+        {
+            Vector3 tangent = Vector3.zero;
+            if (vessel != null)
+                tangent = Vector3.ProjectOnPlane((Vector3)vessel.srf_velocity, stableNormal);
+            if (tangent.sqrMagnitude > 0.04f)
+                return (-tangent).normalized;
+
+            tangent = Vector3.ProjectOnPlane(wheelForward, stableNormal);
+            if (tangent.sqrMagnitude > 0.0001f)
+                return (-tangent).normalized;
+
+            tangent = part != null ? Vector3.ProjectOnPlane(part.transform.forward, stableNormal) : Vector3.forward;
+            if (tangent.sqrMagnitude > 0.0001f)
+                return tangent.normalized;
+
+            return Vector3.forward;
+        }
+
+        private bool TryGetWheelGroupHit(out WheelHit representativeHit, out Vector3 averagePoint, out Vector3 averageNormal, out float averageSlip)
+        {
+            representativeHit = default(WheelHit);
+            averagePoint = Vector3.zero;
+            averageNormal = Vector3.zero;
+            averageSlip = 0f;
+
+            int hitCount = 0;
+            for (int i = 0; i < wheels.Length; i++)
+            {
+                WheelCollider collider = wheels[i];
+                if (collider == null)
+                    continue;
+
+                WheelHit hit;
+                if (!collider.GetGroundHit(out hit) || hit.collider == null)
+                    continue;
+
+                if (hitCount == 0)
+                    representativeHit = hit;
+
+                averagePoint += hit.point;
+                averageNormal += hit.normal;
+                averageSlip += Mathf.Abs(hit.forwardSlip) + Mathf.Abs(hit.sidewaysSlip);
+                hitCount++;
+            }
+
+            if (hitCount <= 0)
+                return false;
+
+            averagePoint /= hitCount;
+            averageNormal = hitCount > 0 ? (averageNormal / hitCount).normalized : Vector3.up;
+            averageSlip /= hitCount;
+            return true;
+        }
+
+        private static float GetEffectiveWheelGroupRadius(WheelCollider[] colliders)
+        {
+            if (colliders == null || colliders.Length == 0)
+                return 0.35f;
+
+            float radius = 0.05f;
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                WheelCollider collider = colliders[i];
+                if (collider == null)
+                    continue;
+                radius = Mathf.Max(radius, GetSingleWheelRadius(collider));
+            }
+
+            return Mathf.Clamp(radius, 0.05f, 2.4f);
+        }
+
+        private static float GetSingleWheelRadius(WheelCollider wheelCollider)
         {
             if (wheelCollider == null)
                 return 0.35f;
@@ -696,52 +1096,7 @@ namespace KerbalFX.RoverDust
                     radius = Mathf.Max(radius, wheelCollider.radius * axisScale);
             }
 
-            float visualRadius = EstimateVisualWheelRadius(sourcePart, wheelCollider.transform != null ? wheelCollider.transform.position : Vector3.zero);
-            if (visualRadius > 0.01f)
-                radius = Mathf.Max(radius, visualRadius);
-
             return Mathf.Clamp(radius, 0.05f, 2.4f);
-        }
-
-        private static float EstimateVisualWheelRadius(Part sourcePart, Vector3 wheelWorldPosition)
-        {
-            if (sourcePart == null)
-                return 0f;
-
-            Renderer[] renderers = sourcePart.GetComponentsInChildren<Renderer>(true);
-            if (renderers == null || renderers.Length == 0)
-                return 0f;
-
-            float bestScore = float.MaxValue;
-            float bestRadius = 0f;
-
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (renderer == null || renderer is ParticleSystemRenderer)
-                    continue;
-
-                Bounds bounds = renderer.bounds;
-                float extent = Mathf.Max(bounds.extents.x, Mathf.Max(bounds.extents.y, bounds.extents.z));
-                if (extent < 0.03f || extent > 2.8f)
-                    continue;
-
-                float dist = Vector3.Distance(bounds.center, wheelWorldPosition);
-                bool wheelLike = KerbalFxUtil.ContainsAnyToken(renderer.name, WheelLikeTokens)
-                    || (renderer.transform != null && KerbalFxUtil.ContainsAnyToken(renderer.transform.name, WheelLikeTokens));
-
-                if (!wheelLike && dist > 1.15f)
-                    continue;
-
-                float score = dist + (wheelLike ? 0f : 0.75f);
-                if (score < bestScore)
-                {
-                    bestScore = score;
-                    bestRadius = extent;
-                }
-            }
-
-            return bestRadius;
         }
 
         private void UpdateSurfaceColor(Vessel vessel, WheelHit hit)

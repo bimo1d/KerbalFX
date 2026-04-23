@@ -708,7 +708,7 @@ namespace KerbalFX.ImpactPuffs
         private void LoseGroundContact(float dt, bool immediateVolumetric)
         {
             lastCenteredness = 0f;
-            ResetGroundAnchorState(true);
+            ResetGroundAnchorState(immediateVolumetric);
             StopAllEmission(dt, immediateVolumetric);
         }
 

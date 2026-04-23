@@ -1,3 +1,10 @@
+## 0.7.2
+- Reworked **Rover Dust** wheel ownership so compact wheel clusters share one emitter while long rover wheel arrays split into smaller local emitters.
+- Added vessel-level dust budget scaling for large wheel arrays to reduce merged dust walls on 200% quality setting.
+- Improved **Rover Dust** airplane landing gear scaling with a separate visual wheel footprint path while keeping rover wheels on physical wheel-collider scaling.
+- Added scoped distance-continuity fill for airplane landing gear dust to reduce visible chunking at speed.
+- Fixed **Impact Puffs** soft ground-contact loss so fading plume dust stays anchored to the last surface point instead of snapping to the engine in mid-air.
+
 ## 0.7.1
 - Fixed **AeroFX** anchor detection compatibility with FAR-style aero module replacements while keeping cockpit/body false-positive filters.
 - Added **AeroFX** minimum activation `Mach` mode for delaying ribbon activation to higher `Mach` ranges.
