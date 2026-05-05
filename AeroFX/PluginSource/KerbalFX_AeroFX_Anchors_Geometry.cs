@@ -249,11 +249,7 @@ namespace KerbalFX.AeroFX
 
         private static float GetBoundsReach(Bounds bounds, Vector3 axis)
         {
-            Vector3 normalized = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.right;
-            Vector3 extents = bounds.extents;
-            return Mathf.Abs(normalized.x) * extents.x
-                + Mathf.Abs(normalized.y) * extents.y
-                + Mathf.Abs(normalized.z) * extents.z;
+            return KerbalFxUtil.ProjectBoundsExtent(bounds, axis);
         }
 
         private static bool IsIgnoredFxRenderer(Renderer renderer)

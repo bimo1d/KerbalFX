@@ -18,16 +18,13 @@ namespace KerbalFX.ImpactPuffs
             public float BodyVisibility;
             public float BurstStrength;
             public float TouchdownEnergy01;
-            public float BurstLightScale;
+            public float LightAwareMultiplier;
             public Color Color;
             public int FxLayer;
         }
 
         private struct TouchdownLayerOptions
         {
-            public string Name;
-            public Transform Parent;
-            public int Layer;
             public Color Color;
             public float Alpha;
             public float MinSize;
@@ -55,7 +52,6 @@ namespace KerbalFX.ImpactPuffs
             public float SortingFudge;
             public float ShapeRadiusThickness;
             public ParticleSystemRenderMode RenderMode;
-            public Material Material;
             public bool UseCircleShape;
         }
 
@@ -68,7 +64,29 @@ namespace KerbalFX.ImpactPuffs
 
         private const float TeleportDistanceSq = 2500f;
 
+        private const float SurfaceColorBlendStrength = 0.42f;
+        private const float SurfaceColorRefreshSeconds = 0.10f;
+        private const float SurfaceColorSnapshotSmoothing = 12f;
+        private const bool SurfaceColorAllowRendererFallback = false;
+        private const float LightAwareRefreshSeconds = 0.20f;
+        private const float LightAwareSmoothingSpeed = 12f;
+        private const bool LightAwareUseShadowProbe = true;
+        private const bool LightAwareSampleLocalLights = false;
+        private const float LightAwareTouchdownStrength = 1.00f;
+
         private readonly Vessel vessel;
+        private readonly KerbalFxSurfaceColorSampler surfaceColor = new KerbalFxSurfaceColorSampler(
+            KerbalFxDustVisualDefaults.Color,
+            SurfaceColorBlendStrength,
+            SurfaceColorRefreshSeconds,
+            SurfaceColorSnapshotSmoothing,
+            SurfaceColorAllowRendererFallback,
+            ImpactPuffsRuntimeConfig.TouchdownTintProfile);
+        private readonly KerbalFxLightAwareSampler lightAware = new KerbalFxLightAwareSampler(
+            LightAwareRefreshSeconds,
+            LightAwareSmoothingSpeed,
+            LightAwareUseShadowProbe,
+            LightAwareSampleLocalLights);
         private bool wasGrounded;
         private float cooldown;
         private Vector3 lastCoM;
@@ -91,6 +109,7 @@ namespace KerbalFX.ImpactPuffs
             }
 
             cooldown = Mathf.Max(0f, cooldown - dt);
+            TouchdownBurstPool.ReturnExpired();
 
             Vector3 currentCoM = vessel.CoM;
             if (hasLastCoM && (currentCoM - lastCoM).sqrMagnitude > TeleportDistanceSq)
@@ -130,14 +149,6 @@ namespace KerbalFX.ImpactPuffs
             return speed01 * speed01;
         }
 
-        private static void PlayIfExists(ParticleSystem particleSystem)
-        {
-            if (particleSystem != null)
-            {
-                particleSystem.Play(true);
-            }
-        }
-
         private bool TryBuildTouchdownContext(
             float impactSpeed,
             bool ringShockMode,
@@ -157,26 +168,33 @@ namespace KerbalFX.ImpactPuffs
             }
 
             context.Splash = vessel.Splashed || vessel.situation == Vessel.Situations.SPLASHED;
-            float quality = EngineGroundPuffEmitter.GetModeQualityScale();
+            float quality = EngineGroundPuffEmitter.ModeQualityScale;
             context.QualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
             context.QualityScale = Mathf.Clamp(ImpactPuffsConfig.GetQualityScaleMultiplier(), 0.25f, 1.5f);
             context.BodyVisibility = ImpactPuffsRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
             context.BurstStrength = Mathf.Clamp01(impactSpeed / (ringShockMode ? 10.5f : 11.5f));
             context.TouchdownEnergy01 = GetTouchdownEnergy01(impactSpeed);
 
-            float burstLight = ringShockMode
-                ? EngineGroundPuffEmitter.GetTouchdownLightFactor(vessel, context.Point, context.Normal)
-                : EngineGroundPuffEmitter.GetSunLightFactor(vessel, context.Point, context.Normal);
-            float burstLightVisibility = Mathf.Pow(Mathf.Clamp01(burstLight), ringShockMode ? 0.90f : 0.88f);
-            float touchdownLightFloor = Mathf.Lerp(
-                ringShockMode ? 0.03f : 0.02f,
-                ringShockMode ? 0.12f : 0.09f,
-                context.TouchdownEnergy01);
-            context.BurstLightScale = Mathf.Lerp(touchdownLightFloor, 1f, burstLightVisibility);
-
-            context.Color = ResolveTouchdownDustColor(context.Collider, context.Splash, baseWhiten, splashWhiten);
+            context.LightAwareMultiplier = ResolveTouchdownLightMultiplier(context.Point, context.Normal);
+            context.Color = ResolveTouchdownDustColor(context.Splash, baseWhiten, splashWhiten, context.Point, context.Collider);
             context.FxLayer = vessel.rootPart != null ? vessel.rootPart.gameObject.layer : 0;
             return true;
+        }
+
+        private float ResolveTouchdownLightMultiplier(Vector3 hitPoint, Vector3 hitNormal)
+        {
+            if (!ImpactPuffsConfig.UseLightAware)
+            {
+                if (!lightAware.IsReset)
+                    lightAware.Reset();
+                return 1f;
+            }
+            lightAware.ApplySnapshot(vessel, hitPoint, hitNormal);
+            string bodyName = vessel != null && vessel.mainBody != null ? vessel.mainBody.bodyName : string.Empty;
+            float alphaMultiplier = lightAware.GetAlphaMultiplier(
+                ImpactPuffsRuntimeConfig.LightAwareProfile.Get(bodyName),
+                LightAwareTouchdownStrength);
+            return KerbalFxLightingCore.ApplySurfaceBoost(alphaMultiplier);
         }
 
         private bool TryGetTouchdownGroundSurface(out Vector3 point, out Vector3 normal, out Collider collider)
@@ -203,23 +221,73 @@ namespace KerbalFX.ImpactPuffs
             return true;
         }
 
-        private Color ResolveTouchdownDustColor(Collider collider, bool splash, float baseWhiten, float splashWhiten)
+        private Color ResolveTouchdownDustColor(bool splash, float baseWhiten, float splashWhiten, Vector3 hitPoint, Collider hitCollider)
         {
-            Color color = KerbalFxSurfaceColor.GetBaseDustColor(vessel);
-            Color colliderColor;
-            if (KerbalFxSurfaceColor.TryGetColliderColor(collider, out colliderColor))
+            Color color;
+            if (ImpactPuffsConfig.AdaptSurfaceColor && !splash)
             {
-                color = KerbalFxSurfaceColor.BlendWithColliderColor(color, colliderColor);
+                surfaceColor.ApplySnapshot(vessel, hitPoint, hitCollider);
+                color = surfaceColor.CurrentColor;
+            }
+            else
+            {
+                color = KerbalFxDustVisualDefaults.Color;
             }
 
-            color = KerbalFxSurfaceColor.NormalizeDustTone(color);
             color = Color.Lerp(color, new Color(0.90f, 0.90f, 0.89f), baseWhiten);
             if (splash)
             {
                 color = Color.Lerp(color, new Color(0.93f, 0.94f, 0.95f), splashWhiten);
             }
 
+            if (ImpactPuffsConfig.UseLightAware && !splash)
+            {
+                string bodyName = vessel != null && vessel.mainBody != null ? vessel.mainBody.bodyName : string.Empty;
+                color = lightAware.ApplyColorTint(
+                    color,
+                    ImpactPuffsRuntimeConfig.LightAwareProfile.Get(bodyName),
+                    LightAwareTouchdownStrength);
+            }
+
+            LogTouchdownSample(color, splash);
+            LogTouchdownLightSample();
             return color;
+        }
+
+        private void LogTouchdownLightSample()
+        {
+            if (!ImpactPuffsConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel || !ImpactPuffsConfig.UseLightAware)
+                return;
+
+            string bodyName = vessel != null && vessel.mainBody != null ? vessel.mainBody.bodyName : string.Empty;
+            float multiplier = lightAware.GetAlphaMultiplier(
+                ImpactPuffsRuntimeConfig.LightAwareProfile.Get(bodyName),
+                LightAwareTouchdownStrength);
+            KerbalFxLightDebugReporter.Report(
+                "ImpactPuffs",
+                "Touchdown:" + (vessel != null ? vessel.vesselName : "n/a"),
+                lightAware.Current,
+                multiplier,
+                LightAwareTouchdownStrength);
+            ImpactPuffsLog.DebugLog(Localizer.Format(
+                ImpactPuffsLoc.LogTouchdownLightSample,
+                KerbalFxLightFormat.Describe(lightAware.Current, string.Empty),
+                multiplier.ToString("F2", CultureInfo.InvariantCulture)));
+        }
+
+        private void LogTouchdownSample(Color appliedColor, bool splash)
+        {
+            if (!ImpactPuffsConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel)
+                return;
+
+            ImpactPuffsLog.DebugLog(Localizer.Format(
+                ImpactPuffsLoc.LogTouchdownSample,
+                string.IsNullOrEmpty(surfaceColor.LastBodyName) ? "n/a" : surfaceColor.LastBodyName,
+                string.IsNullOrEmpty(surfaceColor.LastBiomeName) ? "n/a" : surfaceColor.LastBiomeName,
+                surfaceColor.LastSource.ToString(),
+                KerbalFxSurfaceColorCore.FormatColor(surfaceColor.LastRawSample),
+                KerbalFxSurfaceColorCore.FormatColor(appliedColor),
+                splash));
         }
 
         private void LogRingShockDebug(
@@ -234,7 +302,7 @@ namespace KerbalFX.ImpactPuffs
             float surfaceOffset,
             float slopeFactor,
             float ringAlpha,
-            float burstLightScale,
+            float lightAwareMultiplier,
             float touchdownEnergy01)
         {
             if (!ImpactPuffsConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel)
@@ -260,7 +328,7 @@ namespace KerbalFX.ImpactPuffs
                 surfaceOffset.ToString("F3", CultureInfo.InvariantCulture),
                 slopeFactor.ToString("F2", CultureInfo.InvariantCulture),
                 ringAlpha.ToString("F2", CultureInfo.InvariantCulture),
-                burstLightScale.ToString("F2", CultureInfo.InvariantCulture),
+                lightAwareMultiplier.ToString("F2", CultureInfo.InvariantCulture),
                 touchdownEnergy01.ToString("F2", CultureInfo.InvariantCulture)
             ));
         }
@@ -302,12 +370,16 @@ namespace KerbalFX.ImpactPuffs
             float slopeFactor = 1f - Mathf.Clamp01(Vector3.Dot(context.Normal, bodyUp));
             float surfaceOffset = (context.Splash ? 0.018f : 0.026f) + slopeFactor * 0.055f + Mathf.Clamp(radiusBase * 0.004f, 0f, 0.018f);
 
-            GameObject root = new GameObject("KerbalFX_ImpactRingShock");
-            root.transform.position = context.Point + context.Normal * surfaceOffset;
-            root.transform.rotation = Quaternion.FromToRotation(Vector3.forward, context.Normal);
-            root.layer = context.FxLayer;
+            TouchdownBurstPool.Slot slot = TouchdownBurstPool.Acquire(context.FxLayer);
+            if (slot == null)
+            {
+                return;
+            }
+            slot.Root.transform.position = context.Point + context.Normal * surfaceOffset;
+            slot.Root.transform.rotation = Quaternion.FromToRotation(Vector3.forward, context.Normal);
 
-            float ringAlpha = Mathf.Lerp(context.Splash ? 0.26f : 0.30f, context.Splash ? 0.36f : 0.43f, context.QualityNorm) * context.BurstLightScale * densityScale * 0.90f;
+            float ringAlpha = Mathf.Lerp(context.Splash ? 0.26f : 0.30f, context.Splash ? 0.36f : 0.43f, context.QualityNorm) * densityScale * 0.86f
+                * Mathf.Max(0.05f, context.LightAwareMultiplier);
             float ringBase =
                 (140f + 460f * context.BurstStrength)
                 * ImpactPuffsRuntimeConfig.TouchdownBurstMultiplier
@@ -324,17 +396,8 @@ namespace KerbalFX.ImpactPuffs
             int ringEdgeCount = Mathf.Clamp(Mathf.RoundToInt(ringDustCount * 0.62f), ringEdgeMin, ringEdgeMax);
             int ringMistCount = Mathf.Clamp(ringDustCount - ringEdgeCount, ringMistMin, ringMistMax);
 
-            Material dustMaterial = ImpactPuffsAssets.GetSharedMaterial();
-            if (dustMaterial == null)
+            ApplyTouchdownLayerProfile(slot.RingEdge, new TouchdownLayerOptions
             {
-                dustMaterial = ImpactPuffsAssets.GetBurstMaterial();
-            }
-
-            ParticleSystem ringEdge = CreateTouchdownLayer(new TouchdownLayerOptions
-            {
-                Name = "RingEdge",
-                Parent = root.transform,
-                Layer = context.FxLayer,
                 Color = context.Color,
                 Alpha = ringAlpha,
                 MinSize = 0.16f * Mathf.Lerp(0.94f, 1.18f, context.QualityNorm) * context.BodyVisibility,
@@ -362,15 +425,11 @@ namespace KerbalFX.ImpactPuffs
                 SortingFudge = 2.2f,
                 ShapeRadiusThickness = 0.00f,
                 RenderMode = ParticleSystemRenderMode.Billboard,
-                Material = dustMaterial,
                 UseCircleShape = true
             });
 
-            ParticleSystem ringMist = CreateTouchdownLayer(new TouchdownLayerOptions
+            ApplyTouchdownLayerProfile(slot.RingMist, new TouchdownLayerOptions
             {
-                Name = "RingMist",
-                Parent = root.transform,
-                Layer = context.FxLayer,
                 Color = Color.Lerp(context.Color, Color.white, 0.06f),
                 Alpha = ringAlpha * 0.58f,
                 MinSize = 0.28f * Mathf.Lerp(0.96f, 1.22f, context.QualityNorm) * context.BodyVisibility,
@@ -398,15 +457,15 @@ namespace KerbalFX.ImpactPuffs
                 SortingFudge = 2.0f,
                 ShapeRadiusThickness = 0.08f,
                 RenderMode = ParticleSystemRenderMode.Billboard,
-                Material = dustMaterial,
                 UseCircleShape = true
             });
 
-            PlayIfExists(ringEdge);
-            PlayIfExists(ringMist);
+            slot.Root.SetActive(true);
+            RestartLayer(slot.RingEdge);
+            RestartLayer(slot.RingMist);
 
             float ringLifeMax = context.Splash ? 2.55f : 2.30f;
-            UnityEngine.Object.Destroy(root, ringLifeMax + 0.90f);
+            TouchdownBurstPool.MarkBusy(slot, ringLifeMax);
 
             LogRingShockDebug(
                 impactSpeed,
@@ -420,17 +479,17 @@ namespace KerbalFX.ImpactPuffs
                 surfaceOffset,
                 slopeFactor,
                 ringAlpha,
-                context.BurstLightScale,
+                context.LightAwareMultiplier,
                 context.TouchdownEnergy01);
         }
 
-        private static ParticleSystem CreateTouchdownLayer(TouchdownLayerOptions o)
+        internal static ParticleSystem BuildPooledTouchdownLayer(Transform parent, int layer, string name)
         {
-            GameObject go = new GameObject("KerbalFX_ImpactBurst_" + o.Name);
-            go.transform.SetParent(o.Parent, false);
+            GameObject go = new GameObject("KerbalFX_ImpactBurst_" + name);
+            go.transform.SetParent(parent, false);
             go.transform.localPosition = Vector3.zero;
             go.transform.localRotation = Quaternion.identity;
-            go.layer = o.Layer;
+            go.layer = layer;
 
             ParticleSystem ps = go.AddComponent<ParticleSystem>();
             ParticleSystem.MainModule main = ps.main;
@@ -438,6 +497,57 @@ namespace KerbalFX.ImpactPuffs
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
             main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
+
+            ParticleSystem.EmissionModule emission = ps.emission;
+            emission.enabled = true;
+
+            ParticleSystem.ShapeModule shape = ps.shape;
+            shape.enabled = true;
+
+            ParticleSystem.VelocityOverLifetimeModule velocity = ps.velocityOverLifetime;
+            velocity.enabled = true;
+            velocity.space = ParticleSystemSimulationSpace.Local;
+
+            ParticleSystem.LimitVelocityOverLifetimeModule limitVelocity = ps.limitVelocityOverLifetime;
+            limitVelocity.enabled = true;
+            limitVelocity.space = ParticleSystemSimulationSpace.Local;
+            limitVelocity.separateAxes = false;
+            limitVelocity.dampen = 0.46f;
+
+            ParticleSystem.ColorOverLifetimeModule colorOverLifetime = ps.colorOverLifetime;
+            colorOverLifetime.enabled = true;
+
+            ParticleSystem.SizeOverLifetimeModule sizeOverLifetime = ps.sizeOverLifetime;
+            sizeOverLifetime.enabled = true;
+
+            ParticleSystem.NoiseModule noise = ps.noise;
+            noise.enabled = true;
+            noise.damping = true;
+
+            ParticleSystemRenderer renderer = ps.GetComponent<ParticleSystemRenderer>();
+            renderer.renderMode = ParticleSystemRenderMode.Billboard;
+
+            Material dustMaterial = ImpactPuffsAssets.GetSharedMaterial();
+            if (dustMaterial == null)
+            {
+                dustMaterial = ImpactPuffsAssets.GetBurstMaterial();
+            }
+            if (dustMaterial != null)
+            {
+                renderer.sharedMaterial = dustMaterial;
+            }
+
+            return ps;
+        }
+
+        private static void ApplyTouchdownLayerProfile(ParticleSystem ps, TouchdownLayerOptions o)
+        {
+            if (ps == null)
+            {
+                return;
+            }
+
+            ParticleSystem.MainModule main = ps.main;
             main.startColor = new Color(o.Color.r, o.Color.g, o.Color.b, Mathf.Clamp01(o.Alpha));
             main.startSize = new ParticleSystem.MinMaxCurve(o.MinSize, o.MaxSize);
             main.startLifetime = new ParticleSystem.MinMaxCurve(o.MinLife, o.MaxLife);
@@ -450,7 +560,6 @@ namespace KerbalFX.ImpactPuffs
                 360000f * maxParticlesScale));
 
             ParticleSystem.EmissionModule emission = ps.emission;
-            emission.enabled = true;
             short burstPrimary = (short)Mathf.Clamp(Mathf.RoundToInt(o.BurstCount * 0.40f), 1, short.MaxValue);
             short burstSecondary = (short)Mathf.Clamp(Mathf.RoundToInt(o.BurstCount * 0.28f), 1, short.MaxValue);
             short burstTertiary = (short)Mathf.Clamp(Mathf.RoundToInt(o.BurstCount * 0.20f), 1, short.MaxValue);
@@ -464,54 +573,51 @@ namespace KerbalFX.ImpactPuffs
             });
 
             ParticleSystem.ShapeModule shape = ps.shape;
-            shape.enabled = true;
             shape.shapeType = o.UseCircleShape ? ParticleSystemShapeType.Circle : ParticleSystemShapeType.Cone;
             shape.angle = o.UseCircleShape ? 0f : o.ShapeAngle;
             shape.radius = o.ShapeRadius;
             shape.radiusThickness = Mathf.Clamp01(o.ShapeRadiusThickness);
 
             ParticleSystem.VelocityOverLifetimeModule velocity = ps.velocityOverLifetime;
-            velocity.enabled = true;
-            velocity.space = ParticleSystemSimulationSpace.Local;
             velocity.x = new ParticleSystem.MinMaxCurve(-o.Lateral, o.Lateral);
             velocity.y = new ParticleSystem.MinMaxCurve(o.LiftMin, o.LiftMax);
             velocity.z = new ParticleSystem.MinMaxCurve(-o.Lateral, o.Lateral);
             velocity.radial = new ParticleSystem.MinMaxCurve(o.RadialMin, o.RadialMax);
 
             ParticleSystem.LimitVelocityOverLifetimeModule limitVelocity = ps.limitVelocityOverLifetime;
-            limitVelocity.enabled = true;
-            limitVelocity.space = ParticleSystemSimulationSpace.Local;
-            limitVelocity.separateAxes = false;
             float maxRadial = Mathf.Max(Mathf.Abs(o.RadialMin), Mathf.Abs(o.RadialMax));
             float speedCap = Mathf.Max(0.20f, Mathf.Max(o.MaxSpeed, maxRadial) * 1.16f);
             limitVelocity.limit = new ParticleSystem.MinMaxCurve(speedCap);
-            limitVelocity.dampen = 0.46f;
 
             ParticleSystem.ColorOverLifetimeModule colorOverLifetime = ps.colorOverLifetime;
-            colorOverLifetime.enabled = true;
             colorOverLifetime.color = o.Gradient;
 
             ParticleSystem.SizeOverLifetimeModule sizeOverLifetime = ps.sizeOverLifetime;
-            sizeOverLifetime.enabled = true;
             sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, o.SizeCurve);
 
             ParticleSystem.NoiseModule noise = ps.noise;
-            noise.enabled = true;
             noise.strength = o.NoiseStrength;
             noise.frequency = o.NoiseFrequency;
             noise.scrollSpeed = o.NoiseScroll;
-            noise.damping = true;
 
             ParticleSystemRenderer renderer = ps.GetComponent<ParticleSystemRenderer>();
-            renderer.renderMode = o.RenderMode;
-            renderer.sortingFudge = o.SortingFudge;
-            renderer.maxParticleSize = o.MaxParticleSize;
-            if (o.Material != null)
+            if (renderer != null)
             {
-                renderer.sharedMaterial = o.Material;
+                renderer.renderMode = o.RenderMode;
+                renderer.sortingFudge = o.SortingFudge;
+                renderer.maxParticleSize = o.MaxParticleSize;
             }
+        }
 
-            return ps;
+        private static void RestartLayer(ParticleSystem ps)
+        {
+            if (ps == null)
+            {
+                return;
+            }
+            ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            ps.Clear();
+            ps.Play(true);
         }
 
         private static Gradient CreateRingShockGradient()
@@ -589,7 +695,7 @@ namespace KerbalFX.ImpactPuffs
 
         private void GetBurstProbeSettings(Vector3 up, out float originOffset, out float rayDistance)
         {
-            float terrainHeight = vessel != null ? Mathf.Max(0f, (float)vessel.heightFromTerrain) : 0f;
+            float terrainHeight = Mathf.Max(0f, EngineGroundPuffEmitter.GetSafeTerrainHeightAgl(vessel));
             float vesselUpExtent;
             if (!TryEstimateVesselUpExtent(up, out vesselUpExtent))
             {
@@ -640,7 +746,7 @@ namespace KerbalFX.ImpactPuffs
 
                     Bounds bounds = partCollider.bounds;
                     float projectedExtent = Mathf.Abs(Vector3.Dot(bounds.center - vessel.CoM, up))
-                        + ProjectBoundsExtent(bounds, up);
+                        + KerbalFxUtil.ProjectBoundsExtent(bounds, up);
                     if (!found || projectedExtent > extent)
                     {
                         extent = projectedExtent;
@@ -650,15 +756,6 @@ namespace KerbalFX.ImpactPuffs
             }
 
             return found;
-        }
-
-        private static float ProjectBoundsExtent(Bounds bounds, Vector3 axis)
-        {
-            Vector3 normalizedAxis = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.up;
-            Vector3 extents = bounds.extents;
-            return Mathf.Abs(normalizedAxis.x) * extents.x
-                + Mathf.Abs(normalizedAxis.y) * extents.y
-                + Mathf.Abs(normalizedAxis.z) * extents.z;
         }
 
         private bool TryRayDown(Vector3 origin, Vector3 direction, float maxDistance, out RaycastHit bestHit)

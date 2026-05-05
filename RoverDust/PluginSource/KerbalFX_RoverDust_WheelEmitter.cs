@@ -1,7 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Reflection;
 using KSP.Localization;
 using UnityEngine;
 
@@ -17,11 +16,22 @@ namespace KerbalFX.RoverDust
         private readonly int wheelGroupCount;
         private readonly float vesselEmitterBudgetScale;
 
+        private readonly KerbalFxSurfaceColorSampler surfaceColor = new KerbalFxSurfaceColorSampler(
+            KerbalFxDustVisualDefaults.Color,
+            SurfaceColorBlendStrength,
+            SurfaceColorRefreshSeconds,
+            SurfaceColorSmoothingSpeed,
+            SurfaceColorAllowRendererFallback,
+            RoverDustRuntimeConfig.TintProfile);
+        private readonly KerbalFxLightAwareSampler lightAware = new KerbalFxLightAwareSampler(
+            LightAwareRefreshSeconds,
+            LightAwareSmoothingSpeed,
+            LightAwareUseShadowProbe,
+            LightAwareSampleLocalLights);
         private float smoothedRate;
         private float debugTimer;
-        private float colorRefreshTimer;
-        private float lightRefreshTimer;
-        private float cachedLightFactor = 1f;
+        private float surfaceColorDebugTimer;
+        private float lightAwareDebugTimer;
         private float wheelDustRateScale = 1f;
         private float wheelEffectiveRadius = 0.35f;
         private float wheelVisualScaleDebug = 1f;
@@ -31,51 +41,48 @@ namespace KerbalFX.RoverDust
         private Vector3 lastContinuityPoint;
         private bool advancedQualityFeatures;
         private bool disposed;
-        private bool colorInitialized;
         private bool lastSuppressed;
         private bool hasLastContinuityPoint;
         private KerbalFxRevisionStamp appliedProfileRevision;
+        private KerbalFxLightAwareEntry cachedLightAwareEntry;
+        private string cachedLightAwareBodyName = string.Empty;
+        private bool hasCachedLightAwareEntry;
+        private Color lastAppliedStartColor;
+        private bool hasAppliedStartColor;
         private string lastSuppressionKey = string.Empty;
-        private int lastSurfaceColliderId = int.MinValue;
-        private string lastSurfaceBody = string.Empty;
-        private string lastSurfaceBiome = string.Empty;
-        private Color currentColor = new Color(KerbalFxSurfaceColor.DefaultDustColor.r, KerbalFxSurfaceColor.DefaultDustColor.g, KerbalFxSurfaceColor.DefaultDustColor.b, 1f);
 
-        private const float BaseDustAlpha = 0.82f;
+        private const float BaseDustAlpha = 0.76f;
         private const float MinDustSpeed = 0.7f;
         private const float SlipBoostScale = 2.4f;
         private const float BaseRateMin = 120f;
         private const float BaseRateRange = 480f;
-        private const float ColorRefreshInterval = 0.3f;
-        private const float LightRefreshInterval = 0.20f;
         private const float DebugLogInterval = 1.2f;
+        private const float SurfaceColorDebugInterval = 1.5f;
         private const float RateSmoothingSpeed = 6.5f;
         private const float RatePlayThreshold = 0.18f;
-        private const float SceneLightsRefreshPeriod = 4.0f;
-        private static readonly string[] KscSurfaceTokens = { "runway", "launchpad", "launch_pad", "launch pad", "crawlerway", "launchsite", "launch_site" };
-        private static readonly string[] KscMaterialTokens = { "runway", "launchpad", "crawlerway" };
-        private static readonly string[] KerbalKonstructsTokens = { "kerbalkonstructs", "staticobject" };
-        private static readonly string[] LampTokens = { "headlamp", "headlight", "floodlight", "spotlight", "searchlight", "lamp", "projector" };
-        private static readonly List<Light> sharedSceneLights = new List<Light>();
-        private static readonly List<Component> sharedComponentBuffer = new List<Component>(24);
-        private static float sharedSceneLightsRefreshAt;
-        private static int sharedSceneLightsRefreshFrame = -1;
-        private static Guid sharedSceneLightsVesselId = Guid.Empty;
-        private static Light cachedSunLight;
-        private static bool sunLightSearched;
-
+        private const float SurfaceColorBlendStrength = 0.55f;
+        private const float SurfaceColorRefreshSeconds = 0.40f;
+        private const float SurfaceColorSmoothingSpeed = 1.4f;
+        private const bool SurfaceColorAllowRendererFallback = true;
+        private const float LightAwareRefreshSeconds = 0.25f;
+        private const float LightAwareSmoothingSpeed = 1.2f;
+        private const bool LightAwareUseShadowProbe = true;
+        private const bool LightAwareSampleLocalLights = true;
+        private const float LightAwareWheelStrength = 1.00f;
+        private const float LightAwareDebugInterval = 1.6f;
+        private const float StartColorApplyEpsilon = 0.004f;
         private static Gradient cachedFadeGradient;
         private static AnimationCurve cachedSizeCurve;
         private static float cachedGradientQualityNorm = -1f;
         private static float cachedSizeCurveQuality = -1f;
 
-        public WheelDustEmitter(Part part, WheelCollider[] wheels, float vesselEmitterBudgetScale)
+        public WheelDustEmitter(Part part, WheelCollider[] wheels, float vesselEmitterBudgetScale, int emitterIndex)
         {
             this.part = part;
             this.wheels = wheels ?? new WheelCollider[0];
             this.vesselEmitterBudgetScale = Mathf.Clamp(vesselEmitterBudgetScale, 0.40f, 1f);
             wheelGroupCount = GetActiveWheelColliderCount(this.wheels);
-            debugId = (part.partInfo != null ? part.partInfo.name : part.name) + ":wheelGroup";
+            debugId = BuildDebugId(part, emitterIndex);
 
             root = new GameObject("RoverDustFXEmitter");
             root.transform.parent = part.transform;
@@ -97,20 +104,22 @@ namespace KerbalFX.RoverDust
                 ApplyRuntimeVisualProfile(false);
             }
 
-            WheelHit surfaceHit;
+            Collider surfaceCollider;
             Vector3 hitPoint;
             Vector3 hitNormal;
+            Vector3 hitForward;
             float slip;
-            bool hasHit = TryGetWheelGroupHit(out surfaceHit, out hitPoint, out hitNormal, out slip);
+            bool hasHit = TryGetWheelGroupHit(vessel, out surfaceCollider, out hitPoint, out hitNormal, out hitForward, out slip);
             if (!hasHit)
             {
                 ResetContinuityTrail();
                 SetTargetRate(0f, dt);
+                LogEmitterSkip(vessel, dt, "noWheelGroundHit");
                 return;
             }
 
             string suppressionKey;
-            bool suppressed = ShouldSuppressDustSurface(surfaceHit.collider, out suppressionKey);
+            bool suppressed = RoverDustSurfaceRules.ShouldSuppressSurface(surfaceCollider, out suppressionKey);
             if (suppressed)
             {
                 if ((!lastSuppressed || suppressionKey != lastSuppressionKey) && RoverDustConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
@@ -125,6 +134,12 @@ namespace KerbalFX.RoverDust
             lastSuppressed = false;
             lastSuppressionKey = string.Empty;
 
+            UpdateSurfaceColor(vessel, hitPoint, surfaceCollider, dt);
+            UpdateLightAware(vessel, hitPoint, hitNormal, dt);
+            RefreshDynamicStartColor();
+            LogSurfaceSampleIfNeeded(vessel, dt);
+            LogLightSampleIfNeeded(vessel, dt);
+
             float speed = Mathf.Abs((float)vessel.srfSpeed);
             float speedFactor = Mathf.InverseLerp(MinDustSpeed, 20f, speed);
             float slipBoost = Mathf.Clamp01(slip * SlipBoostScale);
@@ -135,20 +150,8 @@ namespace KerbalFX.RoverDust
             float baseRate = (BaseRateMin + BaseRateRange * speedFactor) * (0.45f + 0.55f * slipBoost) * RoverDustRuntimeConfig.EmissionMultiplier;
             float targetRate = baseRate * qualityRateScale * wheelDustRateScale * bodyVisibility
                 * GetWheelClusterRateScale() * GetWheelVisualRateScale() * vesselEmitterBudgetScale;
-            bool useLightAware = advancedQualityFeatures && RoverDustConfig.UseLightAware;
-
+            targetRate *= GetLightAwareRateMultiplier();
             Vector3 stableNormal = GetStableGroundNormal(vessel, hitPoint, hitNormal);
-            RefreshLightingState(vessel, hitPoint, stableNormal, dt);
-            if (useLightAware)
-            {
-                float light = Mathf.Clamp01(cachedLightFactor);
-                float lightRateFactor = Mathf.Pow(light, RoverDustRuntimeConfig.LightRateExponent);
-                if (light > 0.001f)
-                    lightRateFactor = Mathf.Lerp(RoverDustRuntimeConfig.DaylightRateFloor, 1f, lightRateFactor);
-                targetRate *= lightRateFactor;
-                if (light < 0.025f)
-                    targetRate = 0f;
-            }
 
             if (speed < MinDustSpeed)
             {
@@ -159,15 +162,8 @@ namespace KerbalFX.RoverDust
             SetTargetRate(targetRate, dt);
             Vector3 emitPosition = hitPoint + stableNormal * 0.04f;
             root.transform.position = emitPosition;
-            root.transform.rotation = Quaternion.LookRotation(GetDustForward(vessel, stableNormal, surfaceHit.forwardDir), stableNormal);
+            root.transform.rotation = Quaternion.LookRotation(GetDustForward(vessel, stableNormal, hitForward), stableNormal);
             EmitContinuityTrail(emitPosition, stableNormal, targetRate, speed, dt);
-
-            colorRefreshTimer -= dt;
-            if (colorRefreshTimer <= 0f)
-            {
-                colorRefreshTimer = ColorRefreshInterval;
-                UpdateSurfaceColor(vessel, surfaceHit);
-            }
 
             if (RoverDustConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
             {
@@ -180,8 +176,7 @@ namespace KerbalFX.RoverDust
                         speed.ToString("F2", CultureInfo.InvariantCulture),
                         slip.ToString("F3", CultureInfo.InvariantCulture),
                         smoothedRate.ToString("F1", CultureInfo.InvariantCulture),
-                        currentColor.r.ToString("F2", CultureInfo.InvariantCulture) + "," + currentColor.g.ToString("F2", CultureInfo.InvariantCulture) + "," + currentColor.b.ToString("F2", CultureInfo.InvariantCulture)
-                        + " L=" + cachedLightFactor.ToString("F2", CultureInfo.InvariantCulture)
+                        FormatDustColor()
                         + " W=" + wheelDustRateScale.ToString("F2", CultureInfo.InvariantCulture)
                         + " V=" + wheelVisualScaleDebug.ToString("F2", CultureInfo.InvariantCulture)
                         + " F=" + wheelVisualFootprintScale.ToString("F2", CultureInfo.InvariantCulture)
@@ -210,6 +205,26 @@ namespace KerbalFX.RoverDust
                 UnityEngine.Object.Destroy(root);
         }
 
+        private void LogEmitterSkip(Vessel vessel, float dt, string reason)
+        {
+            if (!RoverDustConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel)
+                return;
+
+            debugTimer -= dt;
+            if (debugTimer > 0f)
+                return;
+
+            debugTimer = DebugLogInterval;
+            RoverDustLog.DebugLog(Localizer.Format(
+                RoverDustLoc.LogEmitterSkip,
+                debugId,
+                reason
+                    + " wheels=" + (wheels != null ? wheels.Length : 0).ToString(CultureInfo.InvariantCulture)
+                    + " speed=" + (vessel != null ? vessel.srfSpeed.ToString("F2", CultureInfo.InvariantCulture) : "null")
+                    + " landed=" + (vessel != null && vessel.Landed)
+                    + " hTerrain=" + (vessel != null ? vessel.heightFromTerrain.ToString("F2", CultureInfo.InvariantCulture) : "null")));
+        }
+
         private void ConfigureParticleSystemBase()
         {
             ParticleSystem.MainModule main = particleSystem.main;
@@ -217,7 +232,8 @@ namespace KerbalFX.RoverDust
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
             main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
-            main.startColor = new Color(currentColor.r, currentColor.g, currentColor.b, BaseDustAlpha);
+            Color dustColor = KerbalFxDustVisualDefaults.Color;
+            main.startColor = new Color(dustColor.r, dustColor.g, dustColor.b, BaseDustAlpha);
 
             ParticleSystem.EmissionModule emission = particleSystem.emission;
             emission.enabled = true;
@@ -248,6 +264,8 @@ namespace KerbalFX.RoverDust
                 return;
 
             appliedProfileRevision.MarkApplied(RoverDustConfig.Revision, RoverDustRuntimeConfig.Revision);
+            ClearLightAwareEntryCache();
+            hasAppliedStartColor = false;
 
             int qualityPercent = Mathf.Clamp(RoverDustConfig.QualityPercent, 25, 200);
             float quality = qualityPercent / 100f;
@@ -270,9 +288,6 @@ namespace KerbalFX.RoverDust
             float wheelSpeedScale = Mathf.Lerp(0.96f, 1.08f, wheelVisualNorm) * Mathf.Lerp(1f, 1.08f, wheelGroupNorm);
             float wheelClusterRateScale = GetWheelClusterRateScale();
             wheelDustRateScale = advancedQualityFeatures ? GetWheelDustRateScale(wheelEffectiveRadius) : 1f;
-            if (!advancedQualityFeatures)
-                cachedLightFactor = 1f;
-
             ParticleSystem.MainModule main = particleSystem.main;
             float maxParticlesBase = 760f * qualityParticleScale * RoverDustRuntimeConfig.MaxParticlesMultiplier;
             float maxParticleBudgetScale = Mathf.Lerp(0.72f, 1f, vesselEmitterBudgetScale);
@@ -414,7 +429,7 @@ namespace KerbalFX.RoverDust
                 },
                 new GradientAlphaKey[]
                 {
-                    new GradientAlphaKey(Mathf.Lerp(0.66f, 0.84f, qualityNorm), 0f),
+                    new GradientAlphaKey(Mathf.Lerp(0.62f, 0.79f, qualityNorm), 0f),
                     new GradientAlphaKey(0f, 1f)
                 });
             return cachedFadeGradient;
@@ -454,310 +469,171 @@ namespace KerbalFX.RoverDust
             }
         }
 
-        private void RefreshLightingState(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal, float dt)
+        private void ApplyCurrentStartColor()
         {
-            if (!advancedQualityFeatures || !RoverDustConfig.UseLightAware)
-            {
-                if (cachedLightFactor != 1f)
-                {
-                    cachedLightFactor = 1f;
-                    ApplyCurrentStartColor();
-                }
-                return;
-            }
-
-            lightRefreshTimer -= dt;
-            if (lightRefreshTimer > 0f)
-                return;
-
-            lightRefreshTimer = LightRefreshInterval;
-            float newLightFactor = EvaluateCombinedLighting(vessel, worldPoint, surfaceNormal);
-            if (Mathf.Abs(newLightFactor - cachedLightFactor) > 0.02f)
-            {
-                cachedLightFactor = newLightFactor;
-                ApplyCurrentStartColor();
-            }
+            ApplyDynamicStartColor(true);
         }
 
-        private void ApplyCurrentStartColor()
+        private void RefreshDynamicStartColor()
+        {
+            ApplyDynamicStartColor(false);
+        }
+
+        private void ApplyDynamicStartColor(bool force)
         {
             if (particleSystem == null)
                 return;
 
-            float alpha = BaseDustAlpha;
-            if (advancedQualityFeatures && RoverDustConfig.UseLightAware)
-            {
-                float light = Mathf.Clamp01(cachedLightFactor);
-                if (light < 0.14f)
-                {
-                    alpha = 0f;
-                }
-                else
-                {
-                    float alphaLight = Mathf.Pow(light, RoverDustRuntimeConfig.LightAlphaExponent);
-                    alphaLight = Mathf.Lerp(RoverDustRuntimeConfig.DaylightAlphaFloor, 1f, alphaLight);
-                    alpha *= alphaLight;
-                }
-            }
+            Color dustColor = GetCurrentDustColor();
+            Color startColor = new Color(dustColor.r, dustColor.g, dustColor.b, ComputeStartAlpha());
+            if (!force && hasAppliedStartColor && IsStartColorClose(startColor, lastAppliedStartColor))
+                return;
 
+            ParticleSystem.MainModule main = particleSystem.main;
+            main.startColor = startColor;
+            lastAppliedStartColor = startColor;
+            hasAppliedStartColor = true;
+        }
+
+        private static bool IsStartColorClose(Color a, Color b)
+        {
+            return Mathf.Abs(a.r - b.r) <= StartColorApplyEpsilon
+                && Mathf.Abs(a.g - b.g) <= StartColorApplyEpsilon
+                && Mathf.Abs(a.b - b.b) <= StartColorApplyEpsilon
+                && Mathf.Abs(a.a - b.a) <= StartColorApplyEpsilon;
+        }
+
+        private float ComputeStartAlpha()
+        {
+            float alpha = BaseDustAlpha;
             float bodyVisibility = GetBodyDustVisibilityMultiplier(part != null ? part.vessel : null);
             float bodyBoostNorm = Mathf.Clamp01((bodyVisibility - 1f) / 0.5f);
             alpha *= Mathf.Lerp(1f, 1.16f, bodyBoostNorm);
-            alpha = Mathf.Clamp(alpha, 0f, 0.97f);
-
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.startColor = new Color(currentColor.r, currentColor.g, currentColor.b, alpha);
+            alpha *= GetLightAwareVisualAlphaMultiplier();
+            return Mathf.Clamp(alpha, 0f, 0.97f);
         }
 
-        private static float EvaluateCombinedLighting(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
+        private float GetLightAwareAlphaMultiplier()
         {
-            RefreshSharedSceneLights(vessel);
-
-            float sunLight = EvaluateSunLighting(vessel, worldPoint, surfaceNormal);
-            float artificialLight = EvaluateNearbyArtificialLights(worldPoint, surfaceNormal);
-
-            if (sunLight <= 0.001f && artificialLight < 0.055f)
-                return 0f;
-
-            float combined = Mathf.Max(sunLight, artificialLight);
-            if (combined < RoverDustRuntimeConfig.MinCombinedLight)
-                return 0f;
-
-            return Mathf.Clamp01(combined);
+            if (!RoverDustConfig.UseLightAware)
+                return 1f;
+            return lightAware.GetAlphaMultiplier(
+                GetLightAwareEntry(),
+                LightAwareWheelStrength);
         }
 
-        private static float EvaluateSunLighting(Vessel vessel, Vector3 worldPoint, Vector3 surfaceNormal)
+        private float GetLightAwareVisualAlphaMultiplier()
         {
-            Vector3 safeNormal = surfaceNormal.sqrMagnitude > 0.0001f ? surfaceNormal.normalized : Vector3.up;
-
-            float directionalBest = 0f;
-            for (int i = 0; i < sharedSceneLights.Count; i++)
-            {
-                float strength = EvaluateSingleDirectionalSunLight(sharedSceneLights[i], safeNormal);
-                if (strength > directionalBest)
-                    directionalBest = strength;
-            }
-
-            float geometricSun = 0f;
-            Vector3 sunDirection;
-            if (KerbalFxSunLight.TryGetSunDirection(worldPoint, out sunDirection))
-            {
-                float sunDot = Vector3.Dot(safeNormal, sunDirection);
-                if (sunDot > 0f)
-                    geometricSun = Mathf.Lerp(0.20f, 1f, Mathf.Clamp01(sunDot));
-            }
-
-            bool isDayAtPoint = geometricSun > 0.001f;
-            float best = Mathf.Max(directionalBest, geometricSun);
-
-            if (best <= 0.01f && vessel != null && vessel.directSunlight)
-            {
-                best = 0.90f;
-                isDayAtPoint = true;
-            }
-
-            if (!isDayAtPoint)
-                return 0f;
-
-            if (vessel != null && !vessel.directSunlight)
-            {
-                float shadowed = best * RoverDustRuntimeConfig.ShadowLightFactor;
-                float cloudyDayFloor = geometricSun * 0.22f;
-                best = Mathf.Max(shadowed, cloudyDayFloor);
-            }
-
-            return Mathf.Clamp01(best);
+            return KerbalFxLightingCore.ApplySurfaceBoost(GetLightAwareAlphaMultiplier());
         }
 
-        private static float EvaluateNearbyArtificialLights(Vector3 worldPoint, Vector3 surfaceNormal)
+        private float GetLightAwareRateMultiplier()
         {
-            float best = 0f;
-            for (int i = 0; i < sharedSceneLights.Count; i++)
+            return KerbalFxLightingCore.ApplyRateCap(GetLightAwareVisualAlphaMultiplier());
+        }
+
+        private Color GetCurrentDustColor()
+        {
+            Color baseColor = RoverDustConfig.AdaptSurfaceColor ? surfaceColor.CurrentColor : KerbalFxDustVisualDefaults.Color;
+            if (!RoverDustConfig.UseLightAware)
+                return baseColor;
+            return lightAware.ApplyColorTint(
+                baseColor,
+                GetLightAwareEntry(),
+                LightAwareWheelStrength);
+        }
+
+        private KerbalFxLightAwareEntry GetLightAwareEntry()
+        {
+            string bodyName = part != null && part.vessel != null && part.vessel.mainBody != null
+                ? part.vessel.mainBody.bodyName
+                : string.Empty;
+            if (!hasCachedLightAwareEntry || bodyName != cachedLightAwareBodyName)
             {
-                float strength = EvaluateSingleArtificialLight(sharedSceneLights[i], worldPoint, surfaceNormal);
-                if (strength > best)
-                    best = strength;
+                cachedLightAwareBodyName = bodyName;
+                cachedLightAwareEntry = RoverDustRuntimeConfig.LightAwareProfile.Get(bodyName);
+                hasCachedLightAwareEntry = true;
             }
-            return Mathf.Clamp01(best);
+            return cachedLightAwareEntry;
         }
 
-        private static float EvaluateSingleDirectionalSunLight(Light light, Vector3 surfaceNormal)
+        private void ClearLightAwareEntryCache()
         {
-            if (light == null || !light.enabled || light.intensity <= 0.03f || !light.gameObject.activeInHierarchy)
-                return 0f;
-            if (light.type != LightType.Directional || light.transform == null)
-                return 0f;
-
-            Vector3 toLightDir = (-light.transform.forward).normalized;
-            float normalDot = Mathf.Clamp01(Vector3.Dot(surfaceNormal.normalized, toLightDir));
-            float strength = light.intensity * Mathf.Lerp(0.35f, 1f, normalDot);
-            return Mathf.Clamp01(strength / 1.05f);
+            cachedLightAwareBodyName = string.Empty;
+            cachedLightAwareEntry = KerbalFxLightAwareEntry.Default;
+            hasCachedLightAwareEntry = false;
         }
 
-        private static void RefreshSharedSceneLights(Vessel vessel)
+        private void UpdateSurfaceColor(Vessel vessel, Vector3 hitPoint, Collider surfaceCollider, float dt)
         {
-            Guid vesselId = vessel != null ? vessel.id : Guid.Empty;
-            int frame = Time.frameCount;
-            if (sharedSceneLightsRefreshFrame == frame && vesselId == sharedSceneLightsVesselId)
+            if (!RoverDustConfig.AdaptSurfaceColor)
+            {
+                surfaceColor.Reset();
                 return;
-            sharedSceneLightsRefreshFrame = frame;
-
-            if (vesselId != sharedSceneLightsVesselId)
-            {
-                sharedSceneLightsVesselId = vesselId;
-                sharedSceneLightsRefreshAt = 0f;
             }
 
+            surfaceColor.Tick(vessel, hitPoint, surfaceCollider, dt);
+        }
+
+        private void UpdateLightAware(Vessel vessel, Vector3 hitPoint, Vector3 hitNormal, float dt)
+        {
             if (!RoverDustConfig.UseLightAware)
             {
-                if (sharedSceneLights.Count > 0)
-                    sharedSceneLights.Clear();
-                sharedSceneLightsRefreshAt = 0f;
-                return;
-            }
-
-            if (Time.time < sharedSceneLightsRefreshAt)
-                return;
-
-            sharedSceneLights.Clear();
-
-            CollectSunDirectionalLight();
-            CollectVesselPartLights(vessel);
-
-            sharedSceneLightsRefreshAt = Time.time + SceneLightsRefreshPeriod;
-        }
-
-        private static void CollectSunDirectionalLight()
-        {
-            if (cachedSunLight != null && cachedSunLight.enabled && cachedSunLight.gameObject.activeInHierarchy)
-            {
-                sharedSceneLights.Add(cachedSunLight);
-                return;
-            }
-
-            cachedSunLight = null;
-            if (!sunLightSearched)
-            {
-                sunLightSearched = true;
-                GameObject sunObj = GameObject.Find("SunLight");
-                if (sunObj != null)
+                if (!lightAware.IsReset)
                 {
-                    Light l = sunObj.GetComponent<Light>();
-                    if (l != null && l.type == LightType.Directional)
-                    {
-                        cachedSunLight = l;
-                    }
+                    lightAware.Reset();
+                    ClearLightAwareEntryCache();
                 }
-            }
-            if (cachedSunLight != null && cachedSunLight.enabled && cachedSunLight.gameObject.activeInHierarchy)
-            {
-                sharedSceneLights.Add(cachedSunLight);
                 return;
             }
 
-            Camera mainCam = Camera.main;
-            if (mainCam != null)
-            {
-                Light[] nearbyLights = mainCam.GetComponentsInChildren<Light>(false);
-                if (nearbyLights != null)
-                {
-                    for (int i = 0; i < nearbyLights.Length; i++)
-                    {
-                        Light l = nearbyLights[i];
-                        if (l != null && l.enabled && l.type == LightType.Directional && l.gameObject.activeInHierarchy)
-                        {
-                            cachedSunLight = l;
-                            sharedSceneLights.Add(l);
-                            return;
-                        }
-                    }
-                }
-            }
+            lightAware.Tick(vessel, hitPoint, hitNormal, dt);
         }
 
-        private static void CollectVesselPartLights(Vessel vessel)
+        private void LogLightSampleIfNeeded(Vessel vessel, float dt)
         {
-            if (vessel == null || !vessel.loaded || vessel.parts == null)
+            if (!RoverDustConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel || !RoverDustConfig.UseLightAware)
                 return;
-            for (int p = 0; p < vessel.parts.Count; p++)
-            {
-                Part part = vessel.parts[p];
-                if (part == null) continue;
-                Light[] partLights = part.GetComponentsInChildren<Light>(false);
-                if (partLights == null) continue;
-                for (int i = 0; i < partLights.Length; i++)
-                {
-                    Light light = partLights[i];
-                    if (light == null || !light.enabled || !light.gameObject.activeInHierarchy)
-                        continue;
-                    if ((light.type == LightType.Point || light.type == LightType.Spot)
-                        && light.intensity > 0.01f && light.range > 0.50f)
-                    {
-                        sharedSceneLights.Add(light);
-                    }
-                }
-            }
+
+            float multiplier = GetLightAwareAlphaMultiplier();
+            KerbalFxLightDebugReporter.Report("RoverDust", debugId, lightAware.Current, multiplier, LightAwareWheelStrength);
+
+            lightAwareDebugTimer -= dt;
+            if (lightAwareDebugTimer > 0f)
+                return;
+
+            lightAwareDebugTimer = LightAwareDebugInterval;
+            RoverDustLog.DebugLog(Localizer.Format(
+                RoverDustLoc.LogLightSample,
+                debugId,
+                KerbalFxLightFormat.Describe(lightAware.Current, string.Empty),
+                multiplier.ToString("F2", CultureInfo.InvariantCulture)));
         }
 
-        private static float EvaluateSingleArtificialLight(Light light, Vector3 worldPoint, Vector3 surfaceNormal)
+        private void LogSurfaceSampleIfNeeded(Vessel vessel, float dt)
         {
-            if (light == null || !light.enabled || light.intensity <= 0.01f || !light.gameObject.activeInHierarchy)
-                return 0f;
-            if ((light.type != LightType.Point && light.type != LightType.Spot) || light.transform == null)
-                return 0f;
-            if (!IsLikelyIntentionalLampLight(light))
-                return 0f;
+            if (!RoverDustConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel || !RoverDustConfig.AdaptSurfaceColor)
+                return;
 
-            float range = light.range;
-            if (range <= 0.01f)
-                return 0f;
+            surfaceColorDebugTimer -= dt;
+            if (surfaceColorDebugTimer > 0f)
+                return;
 
-            Vector3 pointToLight = light.transform.position - worldPoint;
-            float distance = pointToLight.magnitude;
-            if (distance > range)
-                return 0f;
-
-            Vector3 toLightDir = distance > 0.001f ? pointToLight / distance : Vector3.up;
-            float attenuation = Mathf.Clamp01(1f - distance / range);
-            attenuation *= attenuation;
-
-            float spotFactor = 1f;
-            if (light.type == LightType.Spot)
-            {
-                float cosLimit = Mathf.Cos(light.spotAngle * 0.5f * Mathf.Deg2Rad);
-                float cosAngle = Vector3.Dot(light.transform.forward, -toLightDir);
-                if (cosAngle <= cosLimit)
-                    return 0f;
-                spotFactor = Mathf.InverseLerp(cosLimit, 1f, cosAngle);
-            }
-
-            float normalDot = Mathf.Clamp01(Vector3.Dot(surfaceNormal.normalized, toLightDir));
-            float normalFactor = Mathf.Lerp(0.40f, 1f, normalDot);
-
-            float strength = light.intensity * attenuation * spotFactor * normalFactor;
-            return Mathf.Clamp01(strength / 1.45f);
+            surfaceColorDebugTimer = SurfaceColorDebugInterval;
+            RoverDustLog.DebugLog(Localizer.Format(
+                RoverDustLoc.LogSurfaceSample,
+                debugId,
+                string.IsNullOrEmpty(surfaceColor.LastBodyName) ? "n/a" : surfaceColor.LastBodyName,
+                string.IsNullOrEmpty(surfaceColor.LastBiomeName) ? "n/a" : surfaceColor.LastBiomeName,
+                surfaceColor.LastSource.ToString(),
+                KerbalFxSurfaceColorCore.FormatColor(surfaceColor.LastRawSample),
+                KerbalFxSurfaceColorCore.FormatColor(surfaceColor.TargetColor),
+                KerbalFxSurfaceColorCore.FormatColor(surfaceColor.CurrentColor)));
         }
 
-        private static bool IsLikelyIntentionalLampLight(Light light)
+        private string FormatDustColor()
         {
-            if (light == null || light.transform == null)
-                return false;
-
-            bool fromPart = light.GetComponentInParent<Part>() != null;
-            if (fromPart)
-            {
-                if (light.range < 1.20f || light.intensity < 0.10f)
-                    return false;
-                if (KerbalFxUtil.ContainsAnyToken(light.name, LampTokens)
-                    || KerbalFxUtil.ContainsAnyTokenInHierarchy(light.transform, LampTokens, 12))
-                    return true;
-                return light.range <= 85f && light.intensity <= 8.5f;
-            }
-
-            if (light.range > 120f || light.intensity < 0.35f)
-                return false;
-            return KerbalFxUtil.ContainsAnyToken(light.name, LampTokens)
-                || KerbalFxUtil.ContainsAnyTokenInHierarchy(light.transform, LampTokens, 12);
+            return KerbalFxSurfaceColorCore.FormatColor(GetCurrentDustColor());
         }
 
         private static Vector3 GetStableGroundNormal(Vessel vessel, Vector3 worldPoint, Vector3 hitNormal)
@@ -922,7 +798,7 @@ namespace KerbalFX.RoverDust
                 if (!KerbalFxUtil.ModuleNameMatches(module, "ModuleWheelBase"))
                     continue;
 
-                string wheelType = ReadMemberString(module, "wheelType");
+                string wheelType = KerbalFxUtil.ReadMemberString(module, "wheelType");
                 if (string.Equals(wheelType, "FREE", StringComparison.OrdinalIgnoreCase))
                     return true;
             }
@@ -940,14 +816,14 @@ namespace KerbalFX.RoverDust
                 PartModule module = sourcePart.Modules[i];
                 if (!KerbalFxUtil.ModuleNameMatches(module, "ModuleWheelBase"))
                     continue;
-                string wheelType = ReadMemberString(module, "wheelType");
+                string wheelType = KerbalFxUtil.ReadMemberString(module, "wheelType");
                 if (!string.Equals(wheelType, "FREE", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                Transform runtimeTransform = ReadMemberTransform(module, "wheelTransform");
+                Transform runtimeTransform = KerbalFxUtil.ReadMemberTransform(module, "wheelTransform");
                 AddUniqueTransform(target, runtimeTransform);
 
-                string wheelTransformName = ReadMemberString(module, "wheelTransformName");
+                string wheelTransformName = KerbalFxUtil.ReadMemberString(module, "wheelTransformName");
                 if (string.IsNullOrEmpty(wheelTransformName))
                     continue;
 
@@ -974,42 +850,6 @@ namespace KerbalFX.RoverDust
             target.Add(transform);
         }
 
-        private static string ReadMemberString(object target, string memberName)
-        {
-            object value = ReadMemberValue(target, memberName);
-            return value != null ? value.ToString() : string.Empty;
-        }
-
-        private static Transform ReadMemberTransform(object target, string memberName)
-        {
-            return ReadMemberValue(target, memberName) as Transform;
-        }
-
-        private static object ReadMemberValue(object target, string memberName)
-        {
-            if (target == null || string.IsNullOrEmpty(memberName))
-                return null;
-
-            Type type = target.GetType();
-            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-
-            try
-            {
-                FieldInfo field = type.GetField(memberName, Flags);
-                if (field != null)
-                    return field.GetValue(target);
-
-                PropertyInfo property = type.GetProperty(memberName, Flags);
-                if (property != null)
-                    return property.GetValue(target, null);
-            }
-            catch
-            {
-            }
-
-            return null;
-        }
-
         private Vector3 GetDustForward(Vessel vessel, Vector3 stableNormal, Vector3 wheelForward)
         {
             Vector3 tangent = Vector3.zero;
@@ -1029,13 +869,13 @@ namespace KerbalFX.RoverDust
             return Vector3.forward;
         }
 
-        private bool TryGetWheelGroupHit(out WheelHit representativeHit, out Vector3 averagePoint, out Vector3 averageNormal, out float averageSlip)
+        private bool TryGetWheelGroupHit(Vessel vessel, out Collider surfaceCollider, out Vector3 averagePoint, out Vector3 averageNormal, out Vector3 averageForward, out float averageSlip)
         {
-            representativeHit = default(WheelHit);
+            surfaceCollider = null;
             averagePoint = Vector3.zero;
             averageNormal = Vector3.zero;
+            averageForward = Vector3.zero;
             averageSlip = 0f;
-
             int hitCount = 0;
             for (int i = 0; i < wheels.Length; i++)
             {
@@ -1048,21 +888,50 @@ namespace KerbalFX.RoverDust
                     continue;
 
                 if (hitCount == 0)
-                    representativeHit = hit;
+                    surfaceCollider = hit.collider;
 
                 averagePoint += hit.point;
                 averageNormal += hit.normal;
+                averageForward += hit.forwardDir;
                 averageSlip += Mathf.Abs(hit.forwardSlip) + Mathf.Abs(hit.sidewaysSlip);
                 hitCount++;
             }
 
-            if (hitCount <= 0)
-                return false;
+            if (hitCount > 0)
+            {
+                averagePoint /= hitCount;
+                averageNormal = (averageNormal / hitCount).normalized;
+                averageForward = GetSafeForward(averageForward / hitCount, averageNormal);
+                averageSlip /= hitCount;
+                return true;
+            }
 
-            averagePoint /= hitCount;
-            averageNormal = hitCount > 0 ? (averageNormal / hitCount).normalized : Vector3.up;
-            averageSlip /= hitCount;
-            return true;
+            return false;
+        }
+
+        private static Vector3 GetSafeForward(Vector3 forward, Vector3 normal)
+        {
+            Vector3 projected = Vector3.ProjectOnPlane(forward, normal);
+            if (projected.sqrMagnitude > 0.0001f)
+                return projected.normalized;
+            projected = Vector3.ProjectOnPlane(Vector3.forward, normal);
+            if (projected.sqrMagnitude > 0.0001f)
+                return projected.normalized;
+            return Vector3.right;
+        }
+
+        private static string BuildDebugId(Part sourcePart, int emitterIndex)
+        {
+            string partName = "unknownPart";
+            int instanceId = 0;
+            if (sourcePart != null)
+            {
+                partName = sourcePart.partInfo != null ? sourcePart.partInfo.name : sourcePart.name;
+                instanceId = sourcePart.GetInstanceID();
+            }
+
+            return partName + "#" + instanceId.ToString(CultureInfo.InvariantCulture)
+                + ":wheelGroup" + emitterIndex.ToString(CultureInfo.InvariantCulture);
         }
 
         private static float GetEffectiveWheelGroupRadius(WheelCollider[] colliders)
@@ -1097,133 +966,6 @@ namespace KerbalFX.RoverDust
             }
 
             return Mathf.Clamp(radius, 0.05f, 2.4f);
-        }
-
-        private void UpdateSurfaceColor(Vessel vessel, WheelHit hit)
-        {
-            if (!RoverDustConfig.AdaptSurfaceColor)
-            {
-                ApplyColor(KerbalFxSurfaceColor.DefaultDustColor);
-                return;
-            }
-
-            if (colorInitialized && IsSameSurfaceSignature(vessel, hit.collider))
-                return;
-            UpdateSurfaceSignature(vessel, hit.collider);
-
-            Color baseColor = KerbalFxSurfaceColor.GetBaseDustColor(vessel);
-            Color newColor = baseColor;
-            Color colliderColor;
-            if (KerbalFxSurfaceColor.TryGetColliderColor(hit.collider, out colliderColor))
-                newColor = KerbalFxSurfaceColor.BlendWithColliderColor(baseColor, colliderColor);
-
-            ApplyColor(newColor);
-        }
-
-        private void ApplyColor(Color color)
-        {
-            Color target = new Color(
-                Mathf.Clamp01(color.r),
-                Mathf.Clamp01(color.g),
-                Mathf.Clamp01(color.b),
-                1f);
-
-            target = KerbalFxSurfaceColor.NormalizeDustTone(target);
-            currentColor = colorInitialized ? Color.Lerp(currentColor, target, 0.45f) : target;
-            colorInitialized = true;
-            ApplyCurrentStartColor();
-        }
-
-        private static bool ShouldSuppressDustSurface(Collider collider, out string reason)
-        {
-            reason = string.Empty;
-            if (collider == null)
-                return false;
-
-            if (KerbalFxUtil.ContainsAnyToken(collider.name, KscSurfaceTokens)
-                || KerbalFxUtil.ContainsAnyToken(collider.gameObject != null ? collider.gameObject.name : string.Empty, KscSurfaceTokens)
-                || KerbalFxUtil.ContainsAnyTokenInHierarchy(collider.transform, KscSurfaceTokens, 14))
-            {
-                reason = "KSC_Surface";
-                return true;
-            }
-
-            Renderer renderer = collider.GetComponent<Renderer>();
-            if (renderer != null && renderer.sharedMaterial != null)
-            {
-                if (KerbalFxUtil.ContainsAnyToken(renderer.sharedMaterial.name, KscMaterialTokens))
-                {
-                    reason = "KSC_Material";
-                    return true;
-                }
-            }
-
-            if (IsKerbalKonstructsStatic(collider))
-            {
-                reason = "KerbalKonstructs_Static";
-                return true;
-            }
-
-            return false;
-        }
-
-        private static bool IsKerbalKonstructsStatic(Collider collider)
-        {
-            if (collider == null)
-                return false;
-
-            Transform t = collider.transform;
-            int depth = 0;
-            while (t != null && depth < 10)
-            {
-                sharedComponentBuffer.Clear();
-                t.GetComponents<Component>(sharedComponentBuffer);
-                if (ContainsAnyTokenInTypes(sharedComponentBuffer, KerbalKonstructsTokens))
-                    return true;
-                t = t.parent;
-                depth++;
-            }
-            return false;
-        }
-
-        private static bool ContainsAnyTokenInTypes(List<Component> components, string[] tokens)
-        {
-            if (components == null || tokens == null)
-                return false;
-
-            for (int i = 0; i < components.Count; i++)
-            {
-                Component c = components[i];
-                if (c == null)
-                    continue;
-                Type type = c.GetType();
-                if (type == null)
-                    continue;
-
-                string fullName = type.FullName;
-                if (!string.IsNullOrEmpty(fullName) && KerbalFxUtil.ContainsAnyToken(fullName, tokens))
-                    return true;
-                if (KerbalFxUtil.ContainsAnyToken(type.Name, tokens))
-                    return true;
-            }
-            return false;
-        }
-
-        private bool IsSameSurfaceSignature(Vessel vessel, Collider collider)
-        {
-            int colliderId = collider != null ? collider.GetInstanceID() : 0;
-            string body = vessel.mainBody != null ? vessel.mainBody.bodyName : "UnknownBody";
-            string biome = string.IsNullOrEmpty(vessel.landedAt) ? "UnknownBiome" : vessel.landedAt;
-            return colliderId == lastSurfaceColliderId
-                && string.Equals(body, lastSurfaceBody, StringComparison.Ordinal)
-                && string.Equals(biome, lastSurfaceBiome, StringComparison.Ordinal);
-        }
-
-        private void UpdateSurfaceSignature(Vessel vessel, Collider collider)
-        {
-            lastSurfaceColliderId = collider != null ? collider.GetInstanceID() : 0;
-            lastSurfaceBody = vessel.mainBody != null ? vessel.mainBody.bodyName : "UnknownBody";
-            lastSurfaceBiome = string.IsNullOrEmpty(vessel.landedAt) ? "UnknownBiome" : vessel.landedAt;
         }
 
         private static float GetBodyDustVisibilityMultiplier(Vessel vessel)

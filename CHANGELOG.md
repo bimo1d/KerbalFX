@@ -1,3 +1,12 @@
+## 0.8
+- Major **Core** rework: shared lighting and surface-color sampling moved into Core for reuse across all FX modules.
+- Reworked **Rover Dust** wheel emitter with cleaner cluster ownership, faster surface sampling, and a continuity trail for landing gear.
+- Reworked **Impact Puffs** volumetric plume layering with smoother profile updates and lower per-frame CPU cost.
+- Reworked **Impact Puffs** touchdown effect with pooled ParticleSystems for lower GC pressure.
+- Reworked **AeroFX** ribbon emitter with stable head-segment bridging, lower runtime allocations, and wider scoring/geometry refactor.
+- Reworked **BlastFX** and added new small space debris effect and WIP gas puffs on undocking.
+- Added per-body config overrides across modules, cleaned up code and fixed reported bugs.
+
 ## 0.7.2
 - Reworked **Rover Dust** wheel ownership so compact wheel clusters share one emitter while long rover wheel arrays split into smaller local emitters.
 - Added vessel-level dust budget scaling for large wheel arrays to reduce merged dust walls on 200% quality setting.

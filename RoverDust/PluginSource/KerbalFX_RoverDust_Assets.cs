@@ -14,16 +14,12 @@ namespace KerbalFX.RoverDust
                 return sharedMaterial;
             }
 
-            Shader shader = KerbalFxUtil.FindParticleShader();
-            if (shader == null)
-            {
-                return null;
-            }
-
-            sharedMaterial = new Material(shader);
-            sharedMaterial.name = "RoverDustFXMaterial";
-            sharedMaterial.color = Color.white;
-            sharedMaterial.mainTexture = GetOrCreateDustTexture();
+            sharedMaterial = KerbalFxUtil.CreateParticleMaterial(
+                "RoverDustFXMaterial",
+                GetOrCreateDustTexture(),
+                false,
+                false,
+                false);
             return sharedMaterial;
         }
 
@@ -35,10 +31,6 @@ namespace KerbalFX.RoverDust
             }
 
             const int size = 64;
-            sharedDustTexture = new Texture2D(size, size, TextureFormat.ARGB32, false);
-            sharedDustTexture.wrapMode = TextureWrapMode.Clamp;
-            sharedDustTexture.filterMode = FilterMode.Bilinear;
-
             Color[] pixels = new Color[size * size];
             for (int y = 0; y < size; y++)
             {
@@ -55,8 +47,7 @@ namespace KerbalFX.RoverDust
                 }
             }
 
-            sharedDustTexture.SetPixels(pixels);
-            sharedDustTexture.Apply(false, true);
+            sharedDustTexture = KerbalFxUtil.CreateProceduralTexture(size, size, pixels);
             return sharedDustTexture;
         }
     }

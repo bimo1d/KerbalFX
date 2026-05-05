@@ -16,25 +16,9 @@ namespace KerbalFX
             string raw = node.GetValue(key);
             if (string.IsNullOrEmpty(raw))
                 return fallback;
-            float value;
-            if (float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            if (float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
                 return Mathf.Clamp(value, min, max);
             if (float.TryParse(raw, NumberStyles.Float, CultureInfo.CurrentCulture, out value))
-                return Mathf.Clamp(value, min, max);
-            return fallback;
-        }
-
-        public static int ReadInt(ConfigNode node, string key, int fallback, int min, int max)
-        {
-            if (node == null || string.IsNullOrEmpty(key) || !node.HasValue(key))
-                return fallback;
-            string raw = node.GetValue(key);
-            if (string.IsNullOrEmpty(raw))
-                return fallback;
-            int value;
-            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
-                return Mathf.Clamp(value, min, max);
-            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.CurrentCulture, out value))
                 return Mathf.Clamp(value, min, max);
             return fallback;
         }
@@ -43,8 +27,7 @@ namespace KerbalFX
         {
             if (node == null || string.IsNullOrEmpty(key) || !node.HasValue(key))
                 return fallback;
-            bool value;
-            return bool.TryParse(node.GetValue(key), out value) ? value : fallback;
+            return bool.TryParse(node.GetValue(key), out var value) ? value : fallback;
         }
 
         public static string ReadString(ConfigNode node, string key, string fallback)
@@ -91,6 +74,27 @@ namespace KerbalFX
             return false;
         }
 
+        public static bool ContainsAnyTokenInObjectHierarchy(Transform t, string[] tokens, int maxDepth)
+        {
+            if (t == null || tokens == null || maxDepth <= 0)
+                return false;
+            Transform current = t;
+            int depth = 0;
+            while (current != null && depth < maxDepth)
+            {
+                if (ContainsAnyToken(current.name, tokens))
+                    return true;
+
+                GameObject go = current.gameObject;
+                if (go != null && ContainsAnyToken(go.name, tokens))
+                    return true;
+
+                current = current.parent;
+                depth++;
+            }
+            return false;
+        }
+
         public static void LoadBodyVisibility(ConfigNode node, Dictionary<string, float> target, float min, float max)
         {
             if (node == null || target == null)
@@ -109,6 +113,88 @@ namespace KerbalFX
                 float multiplier = ReadFloat(bodyNode, "multiplier", 1f, min, max);
                 target[name.Trim()] = multiplier;
             }
+        }
+
+        public static void LoadBodyTints(ConfigNode node, Dictionary<string, KerbalFxBodyTintEntry> target)
+        {
+            if (node == null || target == null)
+                return;
+            ConfigNode[] bodyNodes = node.GetNodes("BODY_TINT");
+            if (bodyNodes == null || bodyNodes.Length == 0)
+                return;
+            for (int i = 0; i < bodyNodes.Length; i++)
+            {
+                ConfigNode bodyNode = bodyNodes[i];
+                if (bodyNode == null)
+                    continue;
+                string name = bodyNode.GetValue("name");
+                if (string.IsNullOrEmpty(name))
+                    continue;
+
+                bool hasColor = TryParseColor(bodyNode.GetValue("color"), out var color);
+                float strength = ReadFloat(bodyNode, "strength", 1f, 0f, 4f);
+                bool overrideBiome = ReadBool(bodyNode, "override_biome", ReadBool(bodyNode, "overrideBiome", false));
+                if (!hasColor && !bodyNode.HasValue("strength"))
+                    continue;
+                target[name.Trim()] = new KerbalFxBodyTintEntry
+                {
+                    HasColor = hasColor,
+                    Color = color,
+                    StrengthMultiplier = strength,
+                    OverrideBiome = overrideBiome
+                };
+            }
+        }
+
+        public static void LoadLightAware(
+            ConfigNode node,
+            Dictionary<string, KerbalFxLightAwareEntry> target,
+            KerbalFxLightAwareEntry defaults)
+        {
+            if (node == null || target == null)
+                return;
+            ConfigNode[] bodyNodes = node.GetNodes("LIGHT_AWARE");
+            if (bodyNodes == null || bodyNodes.Length == 0)
+                return;
+            for (int i = 0; i < bodyNodes.Length; i++)
+            {
+                ConfigNode bodyNode = bodyNodes[i];
+                if (bodyNode == null)
+                    continue;
+                string name = bodyNode.GetValue("name");
+                if (string.IsNullOrEmpty(name))
+                    continue;
+
+                target[name.Trim()] = new KerbalFxLightAwareEntry
+                {
+                    DarkScale = ReadFloat(bodyNode, "dark_scale", defaults.DarkScale, 0f, 1f),
+                    BrightScale = ReadFloat(bodyNode, "bright_scale", defaults.BrightScale, 0f, 2f),
+                    TwilightFloor = ReadFloat(bodyNode, "twilight_floor", defaults.TwilightFloor, 0f, 1f),
+                    MinPerceived = ReadFloat(bodyNode, "min_perceived", defaults.MinPerceived, 0f, 1f),
+                    ColorTintStrength = ReadFloat(bodyNode, "color_tint", defaults.ColorTintStrength, 0f, 1f)
+                };
+            }
+        }
+
+        public static bool TryParseColor(string raw, out Color color)
+        {
+            color = Color.white;
+            if (string.IsNullOrEmpty(raw))
+                return false;
+            string[] parts = raw.Split(',');
+            if (parts.Length < 3)
+                return false;
+            if (!float.TryParse(parts[0].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var r))
+                return false;
+            if (!float.TryParse(parts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var g))
+                return false;
+            if (!float.TryParse(parts[2].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var b))
+                return false;
+            float a = 1f;
+            if (parts.Length >= 4)
+                float.TryParse(parts[3].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out a);
+            color = new Color(Mathf.Clamp01(r), Mathf.Clamp01(g), Mathf.Clamp01(b), Mathf.Clamp01(a));
+            return true;
         }
 
         public static bool HasConfigFileChanged(string path, ref DateTime stamp)
@@ -190,6 +276,23 @@ namespace KerbalFX
             return initialized;
         }
 
+        public static float ProjectBoundsExtent(Bounds bounds, Vector3 axis)
+        {
+            Vector3 normalized = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.up;
+            Vector3 extents = bounds.extents;
+            return Mathf.Abs(normalized.x) * extents.x
+                + Mathf.Abs(normalized.y) * extents.y
+                + Mathf.Abs(normalized.z) * extents.z;
+        }
+
+        public static bool ExpandedBoundsContains(Bounds bounds, Vector3 point, float radius)
+        {
+            float safeRadius = Mathf.Max(0f, radius);
+            if (safeRadius > 0f)
+                bounds.Expand(safeRadius);
+            return bounds.Contains(point) || bounds.SqrDistance(point) <= safeRadius * safeRadius;
+        }
+
         public static uint ComputeVesselPartSignature(Vessel vessel)
         {
             if (vessel == null || vessel.parts == null)
@@ -206,14 +309,14 @@ namespace KerbalFX
             return hash;
         }
 
-        public static string ReadMemberStringLowerInvariant(object target, string memberName)
+        public static object ReadMemberValue(object target, string memberName)
         {
             if (target == null || string.IsNullOrEmpty(memberName))
-                return string.Empty;
+                return null;
 
             Type type = target.GetType();
             if (type == null)
-                return string.Empty;
+                return null;
 
             const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
@@ -221,25 +324,36 @@ namespace KerbalFX
             {
                 FieldInfo field = type.GetField(memberName, Flags);
                 if (field != null)
-                {
-                    object fieldValue = field.GetValue(target);
-                    if (fieldValue != null)
-                        return fieldValue.ToString().ToLowerInvariant();
-                }
+                    return field.GetValue(target);
 
                 PropertyInfo property = type.GetProperty(memberName, Flags);
                 if (property != null)
-                {
-                    object propertyValue = property.GetValue(target, null);
-                    if (propertyValue != null)
-                        return propertyValue.ToString().ToLowerInvariant();
-                }
+                    return property.GetValue(target, null);
             }
             catch
             {
             }
 
+            return null;
+        }
+
+        public static string ReadMemberString(object target, string memberName)
+        {
+            object value = ReadMemberValue(target, memberName);
+            return value != null ? value.ToString() : string.Empty;
+        }
+
+        public static string ReadMemberStringLowerInvariant(object target, string memberName)
+        {
+            string value = ReadMemberString(target, memberName);
+            if (!string.IsNullOrEmpty(value))
+                return value.ToLowerInvariant();
             return string.Empty;
+        }
+
+        public static Transform ReadMemberTransform(object target, string memberName)
+        {
+            return ReadMemberValue(target, memberName) is Transform transform ? transform : null;
         }
 
         private static Shader cachedAlphaBlended;
@@ -272,6 +386,36 @@ namespace KerbalFX
                 FindParticleShader();
             return cachedTransparent != null ? cachedTransparent : cachedAlphaBlended;
         }
+
+        public static Material CreateParticleMaterial(
+            string name,
+            Texture texture,
+            bool additive,
+            bool useTransparentShader,
+            bool allowTransparentFallback)
+        {
+            Shader shader = useTransparentShader ? FindTransparentShader() : FindParticleShader(additive);
+            if (shader == null && allowTransparentFallback)
+                shader = FindTransparentShader();
+            if (shader == null)
+                return null;
+
+            Material material = new Material(shader);
+            material.name = name;
+            material.color = Color.white;
+            material.mainTexture = texture;
+            return material;
+        }
+
+        public static Texture2D CreateProceduralTexture(int width, int height, Color[] pixels)
+        {
+            Texture2D texture = new Texture2D(width, height, TextureFormat.ARGB32, false);
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.filterMode = FilterMode.Bilinear;
+            texture.SetPixels(pixels);
+            texture.Apply(false, true);
+            return texture;
+        }
     }
 
     internal static class KerbalFxVesselUtil
@@ -291,8 +435,7 @@ namespace KerbalFX
         {
             if (string.IsNullOrEmpty(bodyName) || multipliers == null)
                 return 1f;
-            float m;
-            if (multipliers.TryGetValue(bodyName.Trim(), out m))
+            if (multipliers.TryGetValue(bodyName.Trim(), out var m))
                 return Mathf.Clamp(m, min, max);
             return 1f;
         }
@@ -341,165 +484,11 @@ namespace KerbalFX
         }
     }
 
-    internal static class KerbalFxSurfaceColor
+    internal static class KerbalFxDustVisualDefaults
     {
-        private static readonly Dictionary<string, Color> BodyColors = InitBodyColors();
-        public static readonly Color DefaultDustColor = new Color(0.70f, 0.66f, 0.58f);
+        private const float NeutralDustChannel = 0.7f;
 
-        private static Dictionary<string, Color> InitBodyColors()
-        {
-            Dictionary<string, Color> d = new Dictionary<string, Color>(16, StringComparer.OrdinalIgnoreCase);
-            d["Minmus"] = new Color(0.73f, 0.80f, 0.74f);
-            d["Mun"] = new Color(0.75f, 0.73f, 0.69f);
-            d["Duna"] = new Color(0.70f, 0.46f, 0.31f);
-            d["Eve"] = new Color(0.77f, 0.71f, 0.60f);
-            d["Moho"] = new Color(0.63f, 0.56f, 0.50f);
-            d["Gilly"] = new Color(0.62f, 0.58f, 0.52f);
-            d["Bop"] = new Color(0.60f, 0.52f, 0.45f);
-            d["Pol"] = new Color(0.66f, 0.64f, 0.62f);
-            d["Tylo"] = new Color(0.67f, 0.67f, 0.66f);
-            d["Vall"] = new Color(0.70f, 0.72f, 0.74f);
-            d["Eeloo"] = new Color(0.74f, 0.75f, 0.77f);
-            d["Kerbin"] = new Color(0.67f, 0.61f, 0.53f);
-            return d;
-        }
-
-        public static Color GetBaseDustColor(Vessel vessel)
-        {
-            if (vessel == null || vessel.mainBody == null || string.IsNullOrEmpty(vessel.mainBody.bodyName))
-                return DefaultDustColor;
-            Color color;
-            if (BodyColors.TryGetValue(vessel.mainBody.bodyName, out color))
-                return color;
-            return DefaultDustColor;
-        }
-
-        public static bool TryGetColliderColor(Collider collider, out Color color)
-        {
-            color = Color.white;
-            if (collider == null)
-                return false;
-            Renderer renderer = collider.GetComponent<Renderer>();
-            if (renderer == null || renderer.sharedMaterial == null)
-                return false;
-            if (!renderer.sharedMaterial.HasProperty("_Color"))
-                return false;
-            color = renderer.sharedMaterial.color;
-            return true;
-        }
-
-        public static Color BlendWithColliderColor(Color baseColor, Color colliderColor)
-        {
-            float h, s, v;
-            Color.RGBToHSV(colliderColor, out h, out s, out v);
-            s = Mathf.Clamp(s, 0.05f, 0.35f);
-            v = Mathf.Clamp(v, 0.20f, 0.88f);
-            if (h > 0.20f && h < 0.45f)
-            {
-                h = Mathf.Lerp(h, 0.11f, 0.48f);
-                s *= 0.45f;
-                v *= 0.92f;
-            }
-            Color tuned = Color.HSVToRGB(h, s, v);
-            return Color.Lerp(baseColor, tuned, 0.15f);
-        }
-
-        public static Color NormalizeDustTone(Color input)
-        {
-            float h, s, v;
-            Color.RGBToHSV(input, out h, out s, out v);
-            s = Mathf.Clamp(s, 0.11f, 0.37f);
-            v = Mathf.Clamp(v, 0.23f, 0.88f);
-            if (h > 0.20f && h < 0.45f)
-            {
-                h = Mathf.Lerp(h, 0.12f, 0.31f);
-                s *= 0.71f;
-            }
-            return Color.HSVToRGB(h, s, v);
-        }
-    }
-
-    internal static class KerbalFxSunLight
-    {
-        public static bool TryGetSunDirection(Vector3 worldPoint, out Vector3 sunDirection)
-        {
-            sunDirection = Vector3.zero;
-            CelestialBody sun = null;
-            if (Planetarium.fetch != null)
-                sun = Planetarium.fetch.Sun;
-            if (sun == null && FlightGlobals.Bodies != null && FlightGlobals.Bodies.Count > 0)
-            {
-                for (int i = 0; i < FlightGlobals.Bodies.Count; i++)
-                {
-                    CelestialBody body = FlightGlobals.Bodies[i];
-                    if (body != null && !string.IsNullOrEmpty(body.bodyName)
-                        && body.bodyName.IndexOf("sun", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        sun = body;
-                        break;
-                    }
-                }
-                if (sun == null)
-                    sun = FlightGlobals.Bodies[0];
-            }
-            if (sun == null)
-                return false;
-            Vector3d toSun = sun.position - (Vector3d)worldPoint;
-            if (toSun.sqrMagnitude < 1e-8)
-                return false;
-            sunDirection = ((Vector3)toSun).normalized;
-            return sunDirection.sqrMagnitude > 0.0001f;
-        }
-
-        public static bool IsSunOccludedByBody(CelestialBody body, Vector3 worldPoint, Vector3 sunDirection)
-        {
-            if (body == null || sunDirection.sqrMagnitude < 0.0001f)
-                return false;
-            Vector3 toCenter = body.position - worldPoint;
-            float projection = Vector3.Dot(toCenter, sunDirection.normalized);
-            if (projection <= 0f)
-                return false;
-            double radius = body.Radius;
-            double perpSq = toCenter.sqrMagnitude - (double)projection * projection;
-            return perpSq <= radius * radius;
-        }
-
-        public static float GetVesselSunFactor(Vessel vessel, float shadowFloor)
-        {
-            if (vessel == null)
-                return 1f;
-            return vessel.directSunlight ? 1f : Mathf.Clamp01(shadowFloor);
-        }
-
-        public static float GetBodyDaylightFactor(
-            Vessel vessel,
-            Vector3 worldPoint,
-            Vector3 bodyUp,
-            float daylightFloor,
-            float shadowFloor)
-        {
-            if (vessel != null && vessel.directSunlight)
-                return 1f;
-
-            Vector3 sunDirection;
-            if (!TryGetSunDirection(worldPoint, out sunDirection))
-                return 1f;
-
-            if (vessel != null
-                && vessel.mainBody != null
-                && IsSunOccludedByBody(vessel.mainBody, worldPoint, sunDirection))
-            {
-                return Mathf.Clamp01(shadowFloor);
-            }
-
-            Vector3 up = bodyUp.sqrMagnitude > 0.0001f
-                ? bodyUp.normalized
-                : Vector3.up;
-
-            float sunHeight = Mathf.Clamp01(Vector3.Dot(up, sunDirection));
-            float daylight = Mathf.Pow(sunHeight, 0.42f);
-            return Mathf.Lerp(Mathf.Clamp01(daylightFloor), 1f, daylight);
-        }
+        public static readonly Color Color = new Color(NeutralDustChannel, NeutralDustChannel, NeutralDustChannel, 1f);
     }
 
     internal sealed class KerbalFxLog

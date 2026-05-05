@@ -18,14 +18,24 @@ namespace KerbalFX.AeroFX
         private readonly Part sourcePart;
         private readonly string debugId;
         private readonly List<RibbonPoint> ribbon = new List<RibbonPoint>(512);
-        private readonly List<Vector3> renderPositions = new List<Vector3>(2048);
-        private readonly List<Vector3> worldPoints = new List<Vector3>(512);
+        private readonly List<Vector3> renderPositions = new List<Vector3>(MaxRibbonRenderPoints);
         private Vector3[] renderPositionsBuffer = new Vector3[64];
 
         private bool disposed;
         private float smoothedIntensity;
         private float curlPhase;
         private float debugTimer;
+        private float lightAwareDebugTimer;
+        private float appliedLightAlphaScale = 1f;
+        private KerbalFxLightAwareEntry cachedLightAwareEntry;
+        private string cachedLightAwareBodyName = string.Empty;
+        private bool hasCachedLightAwareEntry;
+        private readonly KerbalFxLightAwareSampler lightAware = new KerbalFxLightAwareSampler(
+            LightAwareRefreshSeconds,
+            LightAwareSmoothingSpeed,
+            LightAwareUseShadowProbe,
+            LightAwareSampleLocalLights,
+            LightAwareUseAerialHorizon);
         private KerbalFxRevisionStamp appliedProfileRevision;
         private Vector3 lastEmitBodyLocalPosition;
         private bool hasLastEmitBodyLocalPosition;
@@ -33,7 +43,9 @@ namespace KerbalFX.AeroFX
         private bool hasSmoothedAirflow;
         private Vessel.Situations lastSituation;
         private Gradient cachedGradient;
+        private GradientColorKey[] cachedColorKeys;
         private GradientAlphaKey[] cachedAlphaKeys;
+        private float lastAppliedRgbDim = -1f;
         private Transform bodyTransform;
         private bool isEmitting;
         private bool hasLiveHeadSegment;
@@ -51,8 +63,21 @@ namespace KerbalFX.AeroFX
         private const float BaseAlpha = 0.58f;
         private const float TeleportThreshold = 220f;
         private const float AirflowSmoothSpeed = 1.6f;
+        private const float LightAwareRefreshSeconds = 0.30f;
+        private const float LightAwareSmoothingSpeed = 1.2f;
+        private const bool LightAwareUseShadowProbe = false;
+        private const bool LightAwareSampleLocalLights = false;
+        private const bool LightAwareUseAerialHorizon = true;
+        private const float LightAwareRibbonStrength = 0.90f;
+        private const float LightAwareDebugInterval = 1.6f;
+        private const float LightAwareAlphaApplyEpsilon = 0.01f;
+        private const float LightAwareRibbonVisualExponent = 2.35f;
+        private const float LightAwareAirSunFloorMin = 0.10f;
+        private const float LightAwareAirSunFloorMax = 0.82f;
+        private const float RibbonRgbDimFloor = KerbalFxLightingCore.RgbDimFloor;
         private const int MaxRibbonPoints = 512;
         private const int SegmentSubdivisions = 6;
+        private const int MaxRibbonRenderPoints = (MaxRibbonPoints - 1) * SegmentSubdivisions + 3;
 
         public WingtipRibbonEmitter(Part part, string label)
         {
@@ -171,6 +196,8 @@ namespace KerbalFX.AeroFX
                 fadeSpeed *= Mathf.Lerp(10.00f, 1f, maneuverGateHold01);
             }
             smoothedIntensity = Mathf.Lerp(smoothedIntensity, targetIntensity, Mathf.Clamp01(dt * fadeSpeed));
+            UpdateLightAware(vessel, anchorPoint, dt);
+            LogLightSampleIfNeeded(vessel, dt);
 
             if (AeroFxConfig.UseManeuverOnly)
             {
@@ -413,20 +440,96 @@ namespace KerbalFX.AeroFX
             float loadWidthScale = Mathf.Lerp(0.90f, 1.40f, sample.Load01);
             line.widthMultiplier = widthBase * speedWidthScale * loadWidthScale;
 
-            float lightAlphaScale = Mathf.Pow(Mathf.Clamp01(sample.LightFactor), 1.35f);
-            float alphaScale = Mathf.Sqrt(Mathf.Clamp01(intensity)) * lightAlphaScale;
-            if (cachedGradient != null && cachedAlphaKeys != null && cachedAlphaKeys.Length >= 6
-                && Mathf.Abs(alphaScale - lastAppliedHeadAlpha) > 0.004f)
+            float alphaScale = Mathf.Sqrt(Mathf.Clamp01(intensity)) * appliedLightAlphaScale;
+            float rgbDim = Mathf.Lerp(RibbonRgbDimFloor, 1f, Mathf.Clamp01(appliedLightAlphaScale));
+            bool alphaChanged = cachedAlphaKeys != null && cachedAlphaKeys.Length >= 6
+                && Mathf.Abs(alphaScale - lastAppliedHeadAlpha) > 0.004f;
+            bool colorChanged = cachedColorKeys != null && cachedColorKeys.Length >= 2
+                && Mathf.Abs(rgbDim - lastAppliedRgbDim) > 0.01f;
+            if (cachedGradient == null || (!alphaChanged && !colorChanged))
+                return;
+
+            if (alphaChanged)
             {
                 cachedAlphaKeys[1].alpha = BaseAlpha * 0.24f * alphaScale;
                 cachedAlphaKeys[2].alpha = BaseAlpha * 0.72f * alphaScale;
                 cachedAlphaKeys[3].alpha = BaseAlpha * 0.94f * alphaScale;
                 cachedAlphaKeys[4].alpha = BaseAlpha * 0.92f * alphaScale;
                 cachedAlphaKeys[5].alpha = 0.02f * alphaScale;
-                cachedGradient.SetKeys(cachedGradient.colorKeys, cachedAlphaKeys);
-                line.colorGradient = cachedGradient;
                 lastAppliedHeadAlpha = alphaScale;
             }
+            if (colorChanged)
+            {
+                Color tinted = new Color(rgbDim, rgbDim, rgbDim, 1f);
+                cachedColorKeys[0].color = tinted;
+                cachedColorKeys[1].color = tinted;
+                lastAppliedRgbDim = rgbDim;
+            }
+            cachedGradient.SetKeys(cachedColorKeys, cachedAlphaKeys);
+            line.colorGradient = cachedGradient;
+        }
+
+        private void UpdateLightAware(Vessel vessel, Vector3 anchorWorldPoint, float dt)
+        {
+            if (!AeroFxConfig.UseLightAware)
+            {
+                if (!lightAware.IsReset)
+                {
+                    lightAware.Reset();
+                    ClearLightAwareEntryCache();
+                }
+                appliedLightAlphaScale = 1f;
+                return;
+            }
+
+            lightAware.Tick(vessel, anchorWorldPoint, Vector3.zero, dt);
+            float rawMultiplier = lightAware.GetAlphaMultiplier(
+                GetLightAwareEntry(vessel),
+                LightAwareRibbonStrength);
+            float multiplier = KerbalFxLightingCore.RemapVisualAlpha(rawMultiplier, 0f, LightAwareRibbonVisualExponent);
+            float airSun = Mathf.InverseLerp(0f, 0.65f, lightAware.Current.DirectSun);
+            if (airSun > 0f)
+                multiplier = Mathf.Max(multiplier, Mathf.Lerp(LightAwareAirSunFloorMin, LightAwareAirSunFloorMax, airSun));
+            if (Mathf.Abs(multiplier - appliedLightAlphaScale) >= LightAwareAlphaApplyEpsilon)
+                appliedLightAlphaScale = multiplier;
+        }
+
+        private KerbalFxLightAwareEntry GetLightAwareEntry(Vessel vessel)
+        {
+            string bodyName = vessel != null && vessel.mainBody != null ? vessel.mainBody.bodyName : string.Empty;
+            if (!hasCachedLightAwareEntry || bodyName != cachedLightAwareBodyName)
+            {
+                cachedLightAwareBodyName = bodyName;
+                cachedLightAwareEntry = AeroFxRuntimeConfig.LightAwareProfile.Get(bodyName);
+                hasCachedLightAwareEntry = true;
+            }
+            return cachedLightAwareEntry;
+        }
+
+        private void ClearLightAwareEntryCache()
+        {
+            cachedLightAwareBodyName = string.Empty;
+            cachedLightAwareEntry = KerbalFxLightAwareEntry.Default;
+            hasCachedLightAwareEntry = false;
+        }
+
+        private void LogLightSampleIfNeeded(Vessel vessel, float dt)
+        {
+            if (!AeroFxConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel || !AeroFxConfig.UseLightAware)
+                return;
+
+            KerbalFxLightDebugReporter.Report("AeroFX", debugId, lightAware.Current, appliedLightAlphaScale, LightAwareRibbonStrength);
+
+            lightAwareDebugTimer -= dt;
+            if (lightAwareDebugTimer > 0f)
+                return;
+
+            lightAwareDebugTimer = LightAwareDebugInterval;
+            AeroFxLog.DebugLog(Localizer.Format(
+                AeroFxLoc.LogLightSample,
+                debugId,
+                KerbalFxLightFormat.Describe(lightAware.Current, string.Empty),
+                appliedLightAlphaScale.ToString("F2", CultureInfo.InvariantCulture)));
         }
 
         private void ConfigureLineBase()
@@ -464,12 +567,13 @@ namespace KerbalFX.AeroFX
                 new GradientAlphaKey(BaseAlpha * 0.40f, 0.94f),
                 new GradientAlphaKey(0.02f, 1f)
             };
+            cachedColorKeys = new GradientColorKey[]
+            {
+                new GradientColorKey(Color.white, 0f),
+                new GradientColorKey(Color.white, 1f)
+            };
             cachedGradient.SetKeys(
-                new GradientColorKey[]
-                {
-                    new GradientColorKey(Color.white, 0f),
-                    new GradientColorKey(Color.white, 1f)
-                },
+                cachedColorKeys,
                 cachedAlphaKeys
             );
             line.colorGradient = cachedGradient;
@@ -487,57 +591,71 @@ namespace KerbalFX.AeroFX
             }
 
             appliedProfileRevision.MarkApplied(AeroFxConfig.Revision, AeroFxRuntimeConfig.Revision);
+            ClearLightAwareEntryCache();
             lastAppliedHeadAlpha = -1f;
         }
 
         private void BuildSmoothedRenderPath(int baseCount)
         {
             renderPositions.Clear();
-            worldPoints.Clear();
 
             if (baseCount <= 0 || bodyTransform == null)
                 return;
 
-            for (int i = 0; i < baseCount; i++)
-            {
-                Vector3 worldPoint = bodyTransform.TransformPoint(ribbon[i].BodyLocalPosition);
-                worldPoints.Add(worldPoint);
-            }
-
             if (baseCount == 1)
             {
-                renderPositions.Add(worldPoints[0]);
+                renderPositions.Add(bodyTransform.TransformPoint(ribbon[0].BodyLocalPosition));
                 return;
             }
 
+            Vector3 p0 = bodyTransform.TransformPoint(ribbon[0].BodyLocalPosition);
+            Vector3 p1 = p0;
+            Vector3 p2 = bodyTransform.TransformPoint(ribbon[1].BodyLocalPosition);
+
             for (int i = 0; i < baseCount - 1; i++)
             {
-                Vector3 p0 = worldPoints[Mathf.Max(0, i - 1)];
-                Vector3 p1 = worldPoints[i];
-                Vector3 p2 = worldPoints[i + 1];
-                Vector3 p3 = worldPoints[Mathf.Min(baseCount - 1, i + 2)];
+                Vector3 p3 = i + 2 < baseCount
+                    ? bodyTransform.TransformPoint(ribbon[i + 2].BodyLocalPosition)
+                    : p2;
 
+                bool isTail = i == baseCount - 2;
                 for (int step = 0; step < SegmentSubdivisions; step++)
                 {
                     float u = (float)step / SegmentSubdivisions;
-                    renderPositions.Add(i == baseCount - 2
+                    renderPositions.Add(isTail
                         ? Vector3.Lerp(p1, p2, u)
                         : CatmullRom(p0, p1, p2, p3, u));
                 }
+
+                p0 = p1;
+                p1 = p2;
+                p2 = p3;
             }
 
-            renderPositions.Add(worldPoints[baseCount - 1]);
+            renderPositions.Add(p1);
         }
 
         private Vector3 CatmullRom(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float t)
         {
             float t2 = t * t;
             float t3 = t2 * t;
-            return 0.5f * (
-                (2f * p1) +
-                (-p0 + p2) * t +
-                (2f * p0 - 5f * p1 + 4f * p2 - p3) * t2 +
-                (-p0 + 3f * p1 - 3f * p2 + p3) * t3);
+
+            float x = 0.5f * (
+                (2f * p1.x) +
+                (-p0.x + p2.x) * t +
+                (2f * p0.x - 5f * p1.x + 4f * p2.x - p3.x) * t2 +
+                (-p0.x + 3f * p1.x - 3f * p2.x + p3.x) * t3);
+            float y = 0.5f * (
+                (2f * p1.y) +
+                (-p0.y + p2.y) * t +
+                (2f * p0.y - 5f * p1.y + 4f * p2.y - p3.y) * t2 +
+                (-p0.y + 3f * p1.y - 3f * p2.y + p3.y) * t3);
+            float z = 0.5f * (
+                (2f * p1.z) +
+                (-p0.z + p2.z) * t +
+                (2f * p0.z - 5f * p1.z + 4f * p2.z - p3.z) * t2 +
+                (-p0.z + 3f * p1.z - 3f * p2.z + p3.z) * t3);
+            return new Vector3(x, y, z);
         }
     }
 }

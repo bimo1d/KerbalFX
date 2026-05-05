@@ -184,7 +184,11 @@ namespace KerbalFX.AeroFX
             "dock",
             "lander",
             "dronecore",
-            "rcs"
+            "rcs",
+            "decal",
+            "flag",
+            "sticker",
+            "placard"
         };
 
         private static readonly WingtipAnchorRole[] SecondaryRoleOrder =
@@ -219,12 +223,14 @@ namespace KerbalFX.AeroFX
         private static Vector3 cachedRightAxis;
         private static Vector3 cachedCenterOfMass;
         private static bool useFastAnchorScan = true;
+        private static int observedConfigRevision;
 
         private static readonly List<Candidate> allCandidates = new List<Candidate>(32);
         private static readonly List<Candidate> selectedCandidates = new List<Candidate>(8);
         private static readonly Dictionary<string, WingtipAnchorRole> roleByPartName =
             new Dictionary<string, WingtipAnchorRole>(64, System.StringComparer.OrdinalIgnoreCase);
         private static readonly StringBuilder candidateSummaryBuilder = new StringBuilder(256);
+        private static readonly Vector3[] radialStabilizerDirectionScratch = new Vector3[RadialStabilizerMaxDirections];
 
         private sealed class WeightedScoreDescending : IComparer<Candidate>
         {
@@ -244,6 +250,7 @@ namespace KerbalFX.AeroFX
             WingtipRibbonAnchor[] results,
             int maxResults,
             bool fastAnchorScan,
+            bool buildCandidateSummary,
             out int liftPartCount,
             out int candidateCount,
             out string candidateSummary)
@@ -278,6 +285,7 @@ namespace KerbalFX.AeroFX
             Vector3 centerOfMass = vessel.CoM;
             allCandidates.Clear();
             selectedCandidates.Clear();
+            InvalidateRoleCacheIfStale();
 
             for (int i = 0; i < vessel.parts.Count; i++)
             {
@@ -352,7 +360,8 @@ namespace KerbalFX.AeroFX
                 return 0;
 
             allCandidates.Sort(weightedScoreComparer);
-            candidateSummary = BuildCandidateSummary();
+            if (buildCandidateSummary)
+                candidateSummary = BuildCandidateSummary();
 
             if (ShouldUseRadialStabilizerMode())
             {
@@ -445,7 +454,9 @@ namespace KerbalFX.AeroFX
                 return false;
 
             int directionCount = 0;
-            Vector3[] usedDirections = new Vector3[RadialStabilizerMaxDirections];
+            Vector3[] usedDirections = radialStabilizerDirectionScratch;
+            for (int i = 0; i < usedDirections.Length; i++)
+                usedDirections[i] = Vector3.zero;
             for (int i = 0; i < allCandidates.Count; i++)
             {
                 Candidate candidate = allCandidates[i];
@@ -1220,14 +1231,34 @@ namespace KerbalFX.AeroFX
             return TryClassifyRoleFromName(name, out role);
         }
 
+        private static void InvalidateRoleCacheIfStale()
+        {
+            int currentRevision = AeroFxRuntimeConfig.Revision;
+            if (currentRevision == observedConfigRevision)
+                return;
+            roleByPartName.Clear();
+            observedConfigRevision = currentRevision;
+        }
+
         private static bool TryClassifyRoleFromName(string name, out WingtipAnchorRole role)
         {
             role = WingtipAnchorRole.None;
             if (string.IsNullOrEmpty(name))
                 return false;
 
-            if (roleByPartName.TryGetValue(name, out role))
-                return role != WingtipAnchorRole.None;
+            if (roleByPartName.TryGetValue(name, out var cachedRole))
+            {
+                role = cachedRole;
+                return cachedRole != WingtipAnchorRole.None;
+            }
+
+            if (AeroFxRuntimeConfig.IsPartIgnored(name))
+            {
+                roleByPartName[name] = WingtipAnchorRole.None;
+                if (AeroFxConfig.DebugLogging)
+                    AeroFxLog.DebugLog(Localizer.Format(AeroFxLoc.LogPartIgnore, name));
+                return false;
+            }
 
             if (KerbalFxUtil.ContainsAnyToken(name, DenyTokens))
             {

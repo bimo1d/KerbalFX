@@ -34,11 +34,12 @@ Atmospheric ribbon condensation for wings, control surfaces, and fins.
 - Activation based on speed, density, dynamic pressure, and maneuver load.
 
 ### KerbalFX - BlastFX
-FX module for separators and decouplers.
+FX module for separators, decouplers, and docking ports.
 
-- Triggers blast effects on supported separator parts.
-- Spawns sparks, smoke, and chunk fragments on separator activation.
+- Pyro effects (sparks, smoke, chunk fragments) on supported separator parts.
 - Softer smoke-puff burst for ordinary decouplers.
+- Gas venting effect on docking-port undock. WIP
+- Lingering small debris field in space after decoupling.
 - Size-based effects scaling.
 
 ## Installation

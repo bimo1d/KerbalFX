@@ -146,7 +146,7 @@ namespace KerbalFX.ImpactPuffs
             return found;
         }
 
-        private static float GetSafeTerrainHeightAgl(Vessel vessel)
+        internal static float GetSafeTerrainHeightAgl(Vessel vessel)
         {
             if (vessel == null)
             {
@@ -180,26 +180,7 @@ namespace KerbalFX.ImpactPuffs
                 return false;
             }
 
-            Transform cursor = collider.transform;
-            int depth = 0;
-            while (cursor != null && depth < 6)
-            {
-                if (KerbalFxUtil.ContainsAnyToken(cursor.name, LaunchsiteSurfaceTokens))
-                {
-                    return true;
-                }
-
-                GameObject go = cursor.gameObject;
-                if (go != null && KerbalFxUtil.ContainsAnyToken(go.name, LaunchsiteSurfaceTokens))
-                {
-                    return true;
-                }
-
-                cursor = cursor.parent;
-                depth++;
-            }
-
-            return false;
+            return KerbalFxUtil.ContainsAnyTokenInObjectHierarchy(collider.transform, LaunchsiteSurfaceTokens, 6);
         }
 
         internal static bool IsInKerbinLaunchsiteZone(Vessel vessel)

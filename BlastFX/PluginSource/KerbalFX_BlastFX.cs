@@ -19,8 +19,11 @@ namespace KerbalFX.BlastFX
         public const string LogTriggerVia = "#LOC_KerbalFX_BlastFX_Log_TriggerVia";
         public const string LogTriggerViaSnapshot = "#LOC_KerbalFX_BlastFX_Log_TriggerViaSnapshot";
         public const string LogTriggerViaScan = "#LOC_KerbalFX_BlastFX_Log_TriggerViaScan";
+        public const string LogTriggerProbe = "#LOC_KerbalFX_BlastFX_Log_TriggerProbe";
         public const string LogPyroRing = "#LOC_KerbalFX_BlastFX_Log_PyroRing";
         public const string LogSoftPuff = "#LOC_KerbalFX_BlastFX_Log_SoftPuff";
+        public const string LogUndockGas = "#LOC_KerbalFX_BlastFX_Log_UndockGas";
+        public const string LogVacuumDebris = "#LOC_KerbalFX_BlastFX_Log_VacuumDebris";
         public const string LogPoolPrewarm = "#LOC_KerbalFX_BlastFX_Log_PoolPrewarm";
         public const string LogPoolGrow = "#LOC_KerbalFX_BlastFX_Log_PoolGrow";
     }

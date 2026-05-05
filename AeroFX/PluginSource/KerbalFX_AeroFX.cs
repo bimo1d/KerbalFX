@@ -42,6 +42,8 @@ namespace KerbalFX.AeroFX
         public const string LogSecondaryResult = "#LOC_KerbalFX_AeroFX_Log_SecondaryResult";
         public const string LogSecondaryNone = "#LOC_KerbalFX_AeroFX_Log_SecondaryNone";
         public const string LogTailScan = "#LOC_KerbalFX_AeroFX_Log_TailScan";
+        public const string LogLightSample = "#LOC_KerbalFX_AeroFX_Log_LightSample";
+        public const string LogPartIgnore = "#LOC_KerbalFX_AeroFX_Log_PartIgnore";
     }
 
     public class AeroFxParameters : GameParameters.CustomParameterNode
@@ -165,7 +167,7 @@ namespace KerbalFX.AeroFX
     {
         public static int Revision;
 
-        public const float MinAtmDensity = 0.12f;
+        public const float MinAtmDensity = 0.07f;
         public const float FullAtmDensity = 1.15f;
         public const float MinSurfaceSpeed = 62f;
         public const float FullSurfaceSpeed = 265f;
@@ -182,49 +184,84 @@ namespace KerbalFX.AeroFX
         public const float TrailWidthMax = 0.74f;
         public const float CurlAmplitudeMin = 0.10f;
         public const float CurlAmplitudeMax = 0.50f;
-        public const float OutwardDriftMin = 0.02f;
-        public const float OutwardDriftMax = 0.22f;
         public const float SinkBiasMin = 0.01f;
         public const float SinkBiasMax = 0.08f;
         public const float ActivationFloor = 0.01f;
         public const float FadeInSpeed = 0.55f;
         public const float FadeOutSpeed = 0.55f;
-        public const float LightDaylightFloor = 0.82f;
-        public const float LightShadowFloor = 0.08f;
         public const float AnchorRefreshInterval = 4.0f;
 
         private static readonly KerbalFxBodyVisibilityProfile bodyProfile =
             new KerbalFxBodyVisibilityProfile("KERBALFX_AERO_FX", GetConfigPath, SeedDefaultBodyVisibility, 0.20f, 2.50f);
 
+        private static readonly KerbalFxLightAwareProfile lightAwareProfile =
+            new KerbalFxLightAwareProfile(
+                "KERBALFX_AERO_FX",
+                GetConfigPath,
+                SeedDefaultLightAware,
+                new KerbalFxLightAwareEntry
+                {
+                    DarkScale = 0.06f,
+                    BrightScale = 1f,
+                    TwilightFloor = 0.14f,
+                    MinPerceived = 0.06f,
+                    ColorTintStrength = 0.20f
+                });
+
+        private static readonly AeroFxPartIgnoreProfile partIgnoreProfile =
+            new AeroFxPartIgnoreProfile("KERBALFX_AERO_FX", GetConfigPath);
+
+        public static KerbalFxLightAwareProfile LightAwareProfile { get { return lightAwareProfile; } }
+
         public static void Refresh()
         {
             bodyProfile.Refresh();
+            lightAwareProfile.Refresh();
+            partIgnoreProfile.Refresh();
             Revision++;
             AeroFxLog.Info(Localizer.Format(
                 AeroFxLoc.LogConfig,
                 "GameDatabase",
-                "BodyVisibility=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)));
+                "BodyVisibility=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)
+                + " LightAware=" + lightAwareProfile.Count.ToString(CultureInfo.InvariantCulture)
+                + " PartIgnore=" + partIgnoreProfile.Count.ToString(CultureInfo.InvariantCulture)));
         }
 
         public static void TryHotReloadFromDisk()
         {
             string failure;
-            if (!bodyProfile.TryHotReloadFromDisk(out failure))
+            string lightAwareFailure;
+            string partIgnoreFailure;
+            bool visibilityChanged = bodyProfile.TryHotReloadFromDisk(out failure);
+            bool lightAwareChanged = lightAwareProfile.TryHotReloadFromDisk(out lightAwareFailure);
+            bool partIgnoreChanged = partIgnoreProfile.TryHotReloadFromDisk(out partIgnoreFailure);
+            if (!visibilityChanged && !lightAwareChanged && !partIgnoreChanged)
                 return;
 
             if (failure != null)
                 AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogHotReloadFailed, failure));
+            if (lightAwareFailure != null)
+                AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogHotReloadFailed, lightAwareFailure));
+            if (partIgnoreFailure != null)
+                AeroFxLog.Info(Localizer.Format(AeroFxLoc.LogHotReloadFailed, partIgnoreFailure));
 
             Revision++;
             AeroFxLog.Info(Localizer.Format(
                 AeroFxLoc.LogConfig,
                 "HotReload",
-                "BodyVisibility=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)));
+                "BodyVisibility=" + bodyProfile.Count.ToString(CultureInfo.InvariantCulture)
+                + " LightAware=" + lightAwareProfile.Count.ToString(CultureInfo.InvariantCulture)
+                + " PartIgnore=" + partIgnoreProfile.Count.ToString(CultureInfo.InvariantCulture)));
         }
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
         {
             return bodyProfile.Get(bodyName);
+        }
+
+        public static bool IsPartIgnored(string partName)
+        {
+            return partIgnoreProfile.IsIgnored(partName);
         }
 
         public static float GetMachThreshold(int mode)
@@ -251,9 +288,125 @@ namespace KerbalFX.AeroFX
             dict["Duna"] = 0.42f;
         }
 
+        private static void SeedDefaultLightAware(Dictionary<string, KerbalFxLightAwareEntry> dict)
+        {
+            dict["Kerbin"] = new KerbalFxLightAwareEntry { DarkScale = 0.06f, BrightScale = 1f, TwilightFloor = 0.14f, MinPerceived = 0.07f, ColorTintStrength = 0.22f };
+            dict["Laythe"] = new KerbalFxLightAwareEntry { DarkScale = 0.06f, BrightScale = 1f, TwilightFloor = 0.14f, MinPerceived = 0.07f, ColorTintStrength = 0.24f };
+            dict["Eve"] = new KerbalFxLightAwareEntry { DarkScale = 0.10f, BrightScale = 1f, TwilightFloor = 0.20f, MinPerceived = 0.09f, ColorTintStrength = 0.30f };
+            dict["Duna"] = new KerbalFxLightAwareEntry { DarkScale = 0.05f, BrightScale = 1f, TwilightFloor = 0.10f, MinPerceived = 0.06f, ColorTintStrength = 0.24f };
+            dict["Jool"] = new KerbalFxLightAwareEntry { DarkScale = 0.06f, BrightScale = 1f, TwilightFloor = 0.12f, MinPerceived = 0.06f, ColorTintStrength = 0.26f };
+        }
+
         private static string GetConfigPath()
         {
             return Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KerbalFX", "AeroFX", "KerbalFX_AeroFX.cfg");
+        }
+    }
+
+    internal sealed class AeroFxPartIgnoreProfile
+    {
+        private readonly string configNodeName;
+        private readonly System.Func<string> pathProvider;
+        private readonly HashSet<string> exactNames;
+        private readonly List<string> substringTokens;
+        private System.DateTime lastConfigWriteUtc = System.DateTime.MinValue;
+
+        public AeroFxPartIgnoreProfile(string configNodeName, System.Func<string> pathProvider)
+        {
+            this.configNodeName = configNodeName;
+            this.pathProvider = pathProvider;
+            this.exactNames = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            this.substringTokens = new List<string>(8);
+        }
+
+        public int Count { get { return exactNames.Count + substringTokens.Count; } }
+
+        public void Refresh()
+        {
+            ClearEntries();
+            if (GameDatabase.Instance != null)
+            {
+                ConfigNode[] nodes = GameDatabase.Instance.GetConfigNodes(configNodeName);
+                if (nodes != null)
+                    for (int i = 0; i < nodes.Length; i++)
+                        if (nodes[i] != null)
+                            LoadEntries(nodes[i]);
+            }
+            KerbalFxUtil.PrimeConfigFileStamp(GetPath(), ref lastConfigWriteUtc);
+        }
+
+        public bool TryHotReloadFromDisk(out string failure)
+        {
+            failure = null;
+            string path = GetPath();
+            if (!KerbalFxUtil.HasConfigFileChanged(path, ref lastConfigWriteUtc))
+                return false;
+
+            ClearEntries();
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                {
+                    ConfigNode root = ConfigNode.Load(path);
+                    if (root != null)
+                    {
+                        ConfigNode[] nodes = root.GetNodes(configNodeName);
+                        if (nodes != null)
+                            for (int i = 0; i < nodes.Length; i++)
+                                if (nodes[i] != null)
+                                    LoadEntries(nodes[i]);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                failure = ex.Message;
+            }
+            return true;
+        }
+
+        public bool IsIgnored(string partName)
+        {
+            if (string.IsNullOrEmpty(partName))
+                return false;
+            if (exactNames.Count > 0 && exactNames.Contains(partName))
+                return true;
+            for (int i = 0; i < substringTokens.Count; i++)
+            {
+                if (partName.IndexOf(substringTokens[i], System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+            return false;
+        }
+
+        private void ClearEntries()
+        {
+            exactNames.Clear();
+            substringTokens.Clear();
+        }
+
+        private void LoadEntries(ConfigNode node)
+        {
+            ConfigNode[] entries = node.GetNodes("PART_IGNORE");
+            if (entries == null || entries.Length == 0)
+                return;
+            for (int i = 0; i < entries.Length; i++)
+            {
+                ConfigNode entry = entries[i];
+                if (entry == null)
+                    continue;
+                string name = entry.GetValue("name");
+                if (!string.IsNullOrEmpty(name))
+                    exactNames.Add(name.Trim());
+                string token = entry.GetValue("match");
+                if (!string.IsNullOrEmpty(token))
+                    substringTokens.Add(token.Trim());
+            }
+        }
+
+        private string GetPath()
+        {
+            return pathProvider != null ? pathProvider() : null;
         }
     }
 

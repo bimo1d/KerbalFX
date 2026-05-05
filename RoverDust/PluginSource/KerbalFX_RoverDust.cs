@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using KSP.Localization;
 using UnityEngine;
@@ -30,13 +31,16 @@ namespace KerbalFX.RoverDust
         public const string LogBootstrapStop = "#LOC_KerbalFX_RoverDust_Log_BootstrapStop";
         public const string LogHeartbeat = "#LOC_KerbalFX_RoverDust_Log_Heartbeat";
         public const string LogAttached = "#LOC_KerbalFX_RoverDust_Log_Attached";
-        public const string LogNoCollider = "#LOC_KerbalFX_RoverDust_Log_NoCollider";
         public const string LogVesselScan = "#LOC_KerbalFX_RoverDust_Log_VesselScan";
         public const string LogProfile = "#LOC_KerbalFX_RoverDust_Log_Profile";
         public const string LogSuppressed = "#LOC_KerbalFX_RoverDust_Log_Suppressed";
         public const string LogEmitter = "#LOC_KerbalFX_RoverDust_Log_Emitter";
+        public const string LogTickSkip = "#LOC_KerbalFX_RoverDust_Log_TickSkip";
+        public const string LogEmitterSkip = "#LOC_KerbalFX_RoverDust_Log_EmitterSkip";
         public const string LogConfig = "#LOC_KerbalFX_RoverDust_Log_Config";
         public const string LogHotReloadFailed = "#LOC_KerbalFX_RoverDust_Log_HotReloadFailed";
+        public const string LogSurfaceSample = "#LOC_KerbalFX_RoverDust_Log_SurfaceSample";
+        public const string LogLightSample = "#LOC_KerbalFX_RoverDust_Log_LightSample";
 
     }
 
@@ -75,9 +79,9 @@ namespace KerbalFX.RoverDust
     internal static class RoverDustConfig
     {
         public static bool EnableDust = true;
+        public static bool DebugLogging;
         public static bool AdaptSurfaceColor = true;
         public static bool UseLightAware = true;
-        public static bool DebugLogging;
         public static int QualityPercent = 100;
         public static int Revision;
 
@@ -86,7 +90,7 @@ namespace KerbalFX.RoverDust
         public static void Refresh()
         {
             bool newEnable = true;
-            bool newAdaptColor = true;
+            bool newAdaptSurfaceColor = true;
             bool newUseLightAware = true;
             bool newDebug = false;
             int newQualityPercent = 100;
@@ -97,7 +101,7 @@ namespace KerbalFX.RoverDust
                 if (p != null)
                 {
                     newEnable = p.enableDust;
-                    newAdaptColor = p.adaptSurfaceColor;
+                    newAdaptSurfaceColor = p.adaptSurfaceColor;
                     newUseLightAware = p.useLightAware;
                     newDebug = p.debugLogging;
                     newQualityPercent = Mathf.Clamp(p.qualityScale, 25, 200);
@@ -106,13 +110,13 @@ namespace KerbalFX.RoverDust
 
             bool changed = !initialized
                 || newEnable != EnableDust
-                || newAdaptColor != AdaptSurfaceColor
+                || newAdaptSurfaceColor != AdaptSurfaceColor
                 || newUseLightAware != UseLightAware
                 || newDebug != DebugLogging
                 || newQualityPercent != QualityPercent;
 
             EnableDust = newEnable;
-            AdaptSurfaceColor = newAdaptColor;
+            AdaptSurfaceColor = newAdaptSurfaceColor;
             UseLightAware = newUseLightAware;
             DebugLogging = newDebug;
             QualityPercent = newQualityPercent;
@@ -137,36 +141,64 @@ namespace KerbalFX.RoverDust
         public const float RadiusScaleMultiplier = 1.38f;
         public const float WheelBoostPower = 1.72f;
         public const float WheelBoostMax = 6.20f;
-        public const float LightRateExponent = 1.05f;
-        public const float LightAlphaExponent = 1.25f;
-        public const float MinCombinedLight = 0.040f;
-        public const float ShadowLightFactor = 0.20f;
-        public const float DaylightRateFloor = 0.42f;
-        public const float DaylightAlphaFloor = 0.40f;
 
         private static readonly KerbalFxBodyVisibilityProfile bodyProfile =
             new KerbalFxBodyVisibilityProfile("KERBALFX_ROVER_DUST", GetConfigPath, SeedDefaultBodyVisibility, 0.30f, 3.00f);
 
+        private static readonly KerbalFxSurfaceTintProfile tintProfile =
+            new KerbalFxSurfaceTintProfile("KERBALFX_ROVER_DUST", GetConfigPath, SeedDefaultBodyTints);
+
+        private static readonly KerbalFxLightAwareProfile lightAwareProfile =
+            new KerbalFxLightAwareProfile(
+                "KERBALFX_ROVER_DUST",
+                GetConfigPath,
+                SeedDefaultLightAware,
+                new KerbalFxLightAwareEntry
+                {
+                    DarkScale = 0.12f,
+                    BrightScale = 1f,
+                    TwilightFloor = 0.24f,
+                    MinPerceived = 0.05f,
+                    ColorTintStrength = 0.32f
+                });
+
+        public static KerbalFxSurfaceTintProfile TintProfile { get { return tintProfile; } }
+
+        public static KerbalFxLightAwareProfile LightAwareProfile { get { return lightAwareProfile; } }
+
         public static void Refresh()
         {
             bodyProfile.Refresh();
+            tintProfile.Refresh();
+            lightAwareProfile.Refresh();
             Revision++;
             RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogConfig, "GameDatabase",
-                "BodyVisibility=" + bodyProfile.Count));
+                "BodyVisibility=" + bodyProfile.Count + " BodyTint=" + tintProfile.Count
+                + " LightAware=" + lightAwareProfile.Count));
         }
 
         public static void TryHotReloadFromDisk()
         {
-            string failure;
-            if (!bodyProfile.TryHotReloadFromDisk(out failure))
+            string visibilityFailure;
+            string tintFailure;
+            string lightAwareFailure;
+            bool visibilityChanged = bodyProfile.TryHotReloadFromDisk(out visibilityFailure);
+            bool tintChanged = tintProfile.TryHotReloadFromDisk(out tintFailure);
+            bool lightAwareChanged = lightAwareProfile.TryHotReloadFromDisk(out lightAwareFailure);
+            if (!visibilityChanged && !tintChanged && !lightAwareChanged)
                 return;
 
-            if (failure != null)
-                RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogHotReloadFailed, GetConfigPath(), failure));
+            if (visibilityFailure != null)
+                RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogHotReloadFailed, GetConfigPath(), visibilityFailure));
+            if (tintFailure != null)
+                RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogHotReloadFailed, GetConfigPath(), tintFailure));
+            if (lightAwareFailure != null)
+                RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogHotReloadFailed, GetConfigPath(), lightAwareFailure));
 
             Revision++;
             RoverDustLog.Info(Localizer.Format(RoverDustLoc.LogConfig, "HotReload",
-                "BodyVisibility=" + bodyProfile.Count));
+                "BodyVisibility=" + bodyProfile.Count + " BodyTint=" + tintProfile.Count
+                + " LightAware=" + lightAwareProfile.Count));
         }
 
         public static float GetBodyVisibilityMultiplier(string bodyName)
@@ -176,6 +208,7 @@ namespace KerbalFX.RoverDust
 
         private static void SeedDefaultBodyVisibility(Dictionary<string, float> dict)
         {
+            dict["Kerbin"] = 1.00f;
             dict["Mun"] = 1.65f;
             dict["Minmus"] = 1.55f;
             dict["Duna"] = 1.00f;
@@ -188,6 +221,44 @@ namespace KerbalFX.RoverDust
             dict["Ike"] = 1.12f;
             dict["Pol"] = 1.15f;
             dict["Tylo"] = 0.92f;
+        }
+
+        private static void SeedDefaultLightAware(Dictionary<string, KerbalFxLightAwareEntry> dict)
+        {
+            dict["Kerbin"] = new KerbalFxLightAwareEntry { DarkScale = 0.18f, BrightScale = 1f, TwilightFloor = 0.36f, MinPerceived = 0.07f, ColorTintStrength = 0.32f };
+            dict["Laythe"] = new KerbalFxLightAwareEntry { DarkScale = 0.18f, BrightScale = 1f, TwilightFloor = 0.34f, MinPerceived = 0.07f, ColorTintStrength = 0.34f };
+            dict["Eve"] = new KerbalFxLightAwareEntry { DarkScale = 0.24f, BrightScale = 1f, TwilightFloor = 0.42f, MinPerceived = 0.10f, ColorTintStrength = 0.40f };
+            dict["Duna"] = new KerbalFxLightAwareEntry { DarkScale = 0.16f, BrightScale = 1f, TwilightFloor = 0.32f, MinPerceived = 0.06f, ColorTintStrength = 0.36f };
+            dict["Mun"] = new KerbalFxLightAwareEntry { DarkScale = 0.08f, BrightScale = 1f, TwilightFloor = 0.08f, MinPerceived = 0.04f, ColorTintStrength = 0.28f };
+            dict["Minmus"] = new KerbalFxLightAwareEntry { DarkScale = 0.08f, BrightScale = 1f, TwilightFloor = 0.08f, MinPerceived = 0.04f, ColorTintStrength = 0.30f };
+            dict["Ike"] = new KerbalFxLightAwareEntry { DarkScale = 0.09f, BrightScale = 1f, TwilightFloor = 0.09f, MinPerceived = 0.04f, ColorTintStrength = 0.30f };
+            dict["Gilly"] = new KerbalFxLightAwareEntry { DarkScale = 0.07f, BrightScale = 1f, TwilightFloor = 0.07f, MinPerceived = 0.04f, ColorTintStrength = 0.28f };
+            dict["Vall"] = new KerbalFxLightAwareEntry { DarkScale = 0.07f, BrightScale = 1f, TwilightFloor = 0.07f, MinPerceived = 0.04f, ColorTintStrength = 0.28f };
+            dict["Tylo"] = new KerbalFxLightAwareEntry { DarkScale = 0.09f, BrightScale = 1f, TwilightFloor = 0.09f, MinPerceived = 0.04f, ColorTintStrength = 0.28f };
+            dict["Bop"] = new KerbalFxLightAwareEntry { DarkScale = 0.07f, BrightScale = 1f, TwilightFloor = 0.07f, MinPerceived = 0.04f, ColorTintStrength = 0.28f };
+            dict["Pol"] = new KerbalFxLightAwareEntry { DarkScale = 0.08f, BrightScale = 1f, TwilightFloor = 0.08f, MinPerceived = 0.04f, ColorTintStrength = 0.30f };
+            dict["Dres"] = new KerbalFxLightAwareEntry { DarkScale = 0.07f, BrightScale = 1f, TwilightFloor = 0.07f, MinPerceived = 0.04f, ColorTintStrength = 0.28f };
+            dict["Eeloo"] = new KerbalFxLightAwareEntry { DarkScale = 0.07f, BrightScale = 1f, TwilightFloor = 0.07f, MinPerceived = 0.04f, ColorTintStrength = 0.30f };
+            dict["Moho"] = new KerbalFxLightAwareEntry { DarkScale = 0.09f, BrightScale = 1f, TwilightFloor = 0.09f, MinPerceived = 0.04f, ColorTintStrength = 0.32f };
+        }
+
+        private static void SeedDefaultBodyTints(Dictionary<string, KerbalFxBodyTintEntry> dict)
+        {
+            dict["Kerbin"] = KerbalFxBodyTintEntry.FromColor(new Color(0.62f, 0.55f, 0.42f));
+            dict["Mun"] = KerbalFxBodyTintEntry.FromColor(new Color(0.60f, 0.58f, 0.54f), 0.40f);
+            dict["Minmus"] = KerbalFxBodyTintEntry.FromColor(new Color(0.66f, 0.75f, 0.68f), 0.40f);
+            dict["Duna"] = KerbalFxBodyTintEntry.FromColor(new Color(0.50f, 0.36f, 0.30f), 0.40f);
+            dict["Ike"] = KerbalFxBodyTintEntry.FromColor(new Color(0.55f, 0.52f, 0.50f));
+            dict["Eve"] = KerbalFxBodyTintEntry.FromColor(new Color(0.58f, 0.42f, 0.62f), 0.80f);
+            dict["Gilly"] = KerbalFxBodyTintEntry.FromColor(new Color(0.54f, 0.50f, 0.44f), 0.65f);
+            dict["Laythe"] = KerbalFxBodyTintEntry.FromColor(new Color(0.52f, 0.60f, 0.56f), 1.35f);
+            dict["Moho"] = KerbalFxBodyTintEntry.FromColor(new Color(0.58f, 0.40f, 0.30f), 0.85f);
+            dict["Dres"] = KerbalFxBodyTintEntry.FromColor(new Color(0.62f, 0.58f, 0.52f), 0.45f);
+            dict["Vall"] = KerbalFxBodyTintEntry.FromColor(new Color(0.66f, 0.70f, 0.74f));
+            dict["Tylo"] = KerbalFxBodyTintEntry.FromColor(new Color(0.74f, 0.70f, 0.62f));
+            dict["Bop"] = KerbalFxBodyTintEntry.FromColor(new Color(0.50f, 0.46f, 0.40f), 1.10f);
+            dict["Pol"] = KerbalFxBodyTintEntry.FromColor(new Color(0.78f, 0.72f, 0.50f), 0.85f);
+            dict["Eeloo"] = KerbalFxBodyTintEntry.FromColor(new Color(0.55f, 0.62f, 0.59f), 0.45f);
         }
 
         private static string GetConfigPath()
@@ -271,7 +342,13 @@ namespace KerbalFX.RoverDust
         private readonly Vessel vessel;
         private readonly List<WheelDustEmitter> emitters = new List<WheelDustEmitter>();
         private readonly List<WheelEmitterSpec> emitterSpecs = new List<WheelEmitterSpec>();
+        private readonly List<WheelPartScan> wheelPartScans = new List<WheelPartScan>();
+        private readonly List<WheelCandidate> wheelCandidates = new List<WheelCandidate>();
         private KerbalFxVesselPartSnapshot partSnapshot;
+        private float skipDebugTimer;
+        private string lastSkipReason = string.Empty;
+        private const int MaxEffectWheelColliders = 4;
+        private const float SkipDebugInterval = 1.2f;
 
         public int EmitterCount { get { return emitters.Count; } }
         public bool HasEmitters { get { return emitters.Count > 0; } }
@@ -299,10 +376,18 @@ namespace KerbalFX.RoverDust
         public void Tick(float dt)
         {
             if (emitters.Count == 0)
+            {
+                LogTickSkip("noEmitters", dt);
                 return;
+            }
             if (vessel == null || !vessel.loaded || vessel.packed || vessel.Splashed)
             {
                 StopAll();
+                LogTickSkip(
+                    "invalid loaded=" + (vessel != null && vessel.loaded)
+                    + " packed=" + (vessel != null && vessel.packed)
+                    + " splashed=" + (vessel != null && vessel.Splashed),
+                    dt);
                 return;
             }
 
@@ -311,11 +396,42 @@ namespace KerbalFX.RoverDust
             if (!moving || !nearGround)
             {
                 StopAll();
+                LogTickSkip(
+                    "gate moving=" + moving
+                    + " nearGround=" + nearGround
+                    + " speed=" + vessel.srfSpeed.ToString("F2", CultureInfo.InvariantCulture)
+                    + " landed=" + vessel.Landed
+                    + " hTerrain=" + vessel.heightFromTerrain.ToString("F2", CultureInfo.InvariantCulture),
+                    dt);
                 return;
             }
 
+            lastSkipReason = string.Empty;
             for (int i = 0; i < emitters.Count; i++)
                 emitters[i].Tick(vessel, dt);
+        }
+
+        private void LogTickSkip(string reason, float dt)
+        {
+            if (!RoverDustConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel)
+                return;
+
+            if (reason != lastSkipReason)
+            {
+                skipDebugTimer = 0f;
+                lastSkipReason = reason;
+            }
+
+            skipDebugTimer -= dt;
+            if (skipDebugTimer > 0f)
+                return;
+
+            skipDebugTimer = SkipDebugInterval;
+            RoverDustLog.DebugLog(Localizer.Format(
+                RoverDustLoc.LogTickSkip,
+                vessel != null ? vessel.vesselName : "null",
+                emitters.Count,
+                reason));
         }
 
         public void StopAll()
@@ -333,6 +449,8 @@ namespace KerbalFX.RoverDust
         {
             DisposeEmitters();
             emitterSpecs.Clear();
+            wheelPartScans.Clear();
+            wheelCandidates.Clear();
             partSnapshot.Capture(vessel);
             if (vessel == null || vessel.parts == null)
                 return;
@@ -346,14 +464,111 @@ namespace KerbalFX.RoverDust
                     continue;
 
                 wheelPartCount++;
-                AddPartEmitterSpecs(part, colliders);
+                wheelPartScans.Add(new WheelPartScan(part, colliders));
+                AddWheelCandidates(part, colliders);
+            }
+
+            HashSet<int> selectedWheelIds = SelectEffectWheelIds();
+            for (int i = 0; i < wheelPartScans.Count; i++)
+            {
+                WheelCollider[] selected = FilterSelectedColliders(wheelPartScans[i].Colliders, selectedWheelIds);
+                AddPartEmitterSpecs(wheelPartScans[i].Part, selected);
             }
 
             float vesselBudgetScale = GetVesselEmitterBudgetScale(emitterSpecs.Count);
             for (int i = 0; i < emitterSpecs.Count; i++)
-                emitters.Add(new WheelDustEmitter(emitterSpecs[i].Part, emitterSpecs[i].Wheels, vesselBudgetScale));
+                emitters.Add(new WheelDustEmitter(emitterSpecs[i].Part, emitterSpecs[i].Wheels, vesselBudgetScale, i));
 
             LogVesselScan(wheelPartCount);
+            wheelPartScans.Clear();
+            wheelCandidates.Clear();
+        }
+
+        private void AddWheelCandidates(Part part, WheelCollider[] colliders)
+        {
+            if (part == null || colliders == null)
+                return;
+
+            Transform vesselTransform = vessel != null ? vessel.transform : null;
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                WheelCollider collider = colliders[i];
+                if (collider == null || collider.transform == null)
+                    continue;
+
+                Vector3 worldPos = collider.transform.position;
+                Vector3 vesselLocal = vesselTransform != null ? vesselTransform.InverseTransformPoint(worldPos) : part.transform.InverseTransformPoint(worldPos);
+                wheelCandidates.Add(new WheelCandidate(collider, vesselLocal));
+            }
+        }
+
+        private HashSet<int> SelectEffectWheelIds()
+        {
+            HashSet<int> selected = new HashSet<int>();
+            if (wheelCandidates.Count <= MaxEffectWheelColliders)
+            {
+                for (int i = 0; i < wheelCandidates.Count; i++)
+                    selected.Add(wheelCandidates[i].Id);
+                return selected;
+            }
+
+            Vector3 center = Vector3.zero;
+            for (int i = 0; i < wheelCandidates.Count; i++)
+                center += wheelCandidates[i].VesselLocalPosition;
+            center /= wheelCandidates.Count;
+
+            int[] quadrantCandidate = { -1, -1, -1, -1 };
+            float[] quadrantScore = { float.MinValue, float.MinValue, float.MinValue, float.MinValue };
+            for (int i = 0; i < wheelCandidates.Count; i++)
+            {
+                Vector3 delta = wheelCandidates[i].VesselLocalPosition - center;
+                int quadrant = (delta.z >= 0f ? 2 : 0) + (delta.x >= 0f ? 1 : 0);
+                float score = Mathf.Abs(delta.x) + Mathf.Abs(delta.z) + Mathf.Abs(delta.y) * 0.15f;
+                if (score <= quadrantScore[quadrant])
+                    continue;
+                quadrantScore[quadrant] = score;
+                quadrantCandidate[quadrant] = i;
+            }
+
+            for (int i = 0; i < quadrantCandidate.Length; i++)
+                if (quadrantCandidate[i] >= 0)
+                    selected.Add(wheelCandidates[quadrantCandidate[i]].Id);
+
+            while (selected.Count < MaxEffectWheelColliders)
+            {
+                int best = -1;
+                float bestScore = float.MinValue;
+                for (int i = 0; i < wheelCandidates.Count; i++)
+                {
+                    if (selected.Contains(wheelCandidates[i].Id))
+                        continue;
+                    float score = (wheelCandidates[i].VesselLocalPosition - center).sqrMagnitude;
+                    if (score <= bestScore)
+                        continue;
+                    bestScore = score;
+                    best = i;
+                }
+                if (best < 0)
+                    break;
+                selected.Add(wheelCandidates[best].Id);
+            }
+
+            return selected;
+        }
+
+        private static WheelCollider[] FilterSelectedColliders(WheelCollider[] colliders, HashSet<int> selectedWheelIds)
+        {
+            if (colliders == null || colliders.Length == 0 || selectedWheelIds == null || selectedWheelIds.Count == 0)
+                return new WheelCollider[0];
+
+            List<WheelCollider> selected = new List<WheelCollider>(Mathf.Min(colliders.Length, MaxEffectWheelColliders));
+            for (int i = 0; i < colliders.Length; i++)
+            {
+                WheelCollider collider = colliders[i];
+                if (collider != null && selectedWheelIds.Contains(collider.GetInstanceID()))
+                    selected.Add(collider);
+            }
+            return selected.ToArray();
         }
 
         private void AddPartEmitterSpecs(Part part, WheelCollider[] colliders)
@@ -506,6 +721,30 @@ namespace KerbalFX.RoverDust
             {
                 Part = part;
                 Wheels = wheels;
+            }
+        }
+
+        private sealed class WheelPartScan
+        {
+            public readonly Part Part;
+            public readonly WheelCollider[] Colliders;
+
+            public WheelPartScan(Part part, WheelCollider[] colliders)
+            {
+                Part = part;
+                Colliders = colliders;
+            }
+        }
+
+        private readonly struct WheelCandidate
+        {
+            public readonly int Id;
+            public readonly Vector3 VesselLocalPosition;
+
+            public WheelCandidate(WheelCollider collider, Vector3 vesselLocalPosition)
+            {
+                Id = collider != null ? collider.GetInstanceID() : 0;
+                VesselLocalPosition = vesselLocalPosition;
             }
         }
     }

@@ -14,14 +14,12 @@ namespace KerbalFX.ImpactPuffs
             if (sharedMaterial != null)
                 return sharedMaterial;
 
-            Shader shader = KerbalFxUtil.FindParticleShader();
-            if (shader == null)
-                return null;
-
-            sharedMaterial = new Material(shader);
-            sharedMaterial.name = "KerbalFX_ImpactPuffsMaterial";
-            sharedMaterial.color = Color.white;
-            sharedMaterial.mainTexture = GetSharedTexture();
+            sharedMaterial = KerbalFxUtil.CreateParticleMaterial(
+                "KerbalFX_ImpactPuffsMaterial",
+                GetSharedTexture(),
+                false,
+                false,
+                false);
             return sharedMaterial;
         }
 
@@ -30,14 +28,15 @@ namespace KerbalFX.ImpactPuffs
             if (sharedBurstMaterial != null)
                 return sharedBurstMaterial;
 
-            Shader shader = KerbalFxUtil.FindParticleShader();
-            if (shader == null)
+            sharedBurstMaterial = KerbalFxUtil.CreateParticleMaterial(
+                "KerbalFX_ImpactPuffsBurstMaterial",
+                GetBurstTexture(),
+                false,
+                false,
+                false);
+            if (sharedBurstMaterial == null)
                 return GetSharedMaterial();
 
-            sharedBurstMaterial = new Material(shader);
-            sharedBurstMaterial.name = "KerbalFX_ImpactPuffsBurstMaterial";
-            sharedBurstMaterial.color = Color.white;
-            sharedBurstMaterial.mainTexture = GetBurstTexture();
             return sharedBurstMaterial;
         }
 
@@ -49,10 +48,6 @@ namespace KerbalFX.ImpactPuffs
             }
 
             const int size = 96;
-            sharedTexture = new Texture2D(size, size, TextureFormat.ARGB32, false);
-            sharedTexture.wrapMode = TextureWrapMode.Clamp;
-            sharedTexture.filterMode = FilterMode.Bilinear;
-
             Color[] pixels = new Color[size * size];
             for (int y = 0; y < size; y++)
             {
@@ -74,8 +69,7 @@ namespace KerbalFX.ImpactPuffs
                 }
             }
 
-            sharedTexture.SetPixels(pixels);
-            sharedTexture.Apply(false, true);
+            sharedTexture = KerbalFxUtil.CreateProceduralTexture(size, size, pixels);
             return sharedTexture;
         }
 
@@ -87,10 +81,6 @@ namespace KerbalFX.ImpactPuffs
             }
 
             const int size = 128;
-            sharedBurstTexture = new Texture2D(size, size, TextureFormat.ARGB32, false);
-            sharedBurstTexture.wrapMode = TextureWrapMode.Clamp;
-            sharedBurstTexture.filterMode = FilterMode.Bilinear;
-
             Color[] pixels = new Color[size * size];
             for (int y = 0; y < size; y++)
             {
@@ -114,8 +104,7 @@ namespace KerbalFX.ImpactPuffs
                 }
             }
 
-            sharedBurstTexture.SetPixels(pixels);
-            sharedBurstTexture.Apply(false, true);
+            sharedBurstTexture = KerbalFxUtil.CreateProceduralTexture(size, size, pixels);
             return sharedBurstTexture;
         }
     }

@@ -29,7 +29,6 @@ namespace KerbalFX.AeroFX
         public float Maneuver01;
         public float ManeuverGate01;
         public float Curl01;
-        public float LightFactor;
     }
 
     internal sealed class VesselAeroController : IVesselFxController
@@ -38,8 +37,6 @@ namespace KerbalFX.AeroFX
         private const float SampleDebugInterval = 0.8f;
         private const float AnchorSwitchMargin = 0.45f;
         private const float EmitterGraceSeconds = 4.0f;
-        private const float LightFadeInSpeed = 0.75f;
-        private const float LightFadeOutSpeed = 0.45f;
         private const float ManeuverGateFadeInSpeed = 0.62f;
         private const float ManeuverGateFadeOutSpeed = 12.00f;
 
@@ -62,8 +59,6 @@ namespace KerbalFX.AeroFX
         private string lastCandidateSummary = "none";
         private float anchorRefreshTimer;
         private float sampleDebugTimer;
-        private float smoothedLightFactor = 1f;
-        private bool hasSmoothedLightFactor;
         private float smoothedManeuverGate = 1f;
         private bool hasSmoothedManeuverGate;
 
@@ -170,12 +165,14 @@ namespace KerbalFX.AeroFX
             cachedPartCount = vessel != null && vessel.parts != null ? vessel.parts.Count : -1;
             appliedConfigRevision = AeroFxConfig.Revision;
             int maxRibbonCount = Mathf.Clamp(AeroFxConfig.MaxRibbonCount, 2, MaxEmitters);
+            bool shouldLog = vessel == FlightGlobals.ActiveVessel && (forceLog || AeroFxConfig.DebugLogging);
 
             int newCount = AeroTrailAnchors.TryResolveAll(
                 vessel,
                 resolvedAnchors,
                 maxRibbonCount,
                 AeroFxConfig.FastAnchorScan,
+                shouldLog,
                 out lastLiftPartCount,
                 out lastCandidateCount,
                 out lastCandidateSummary);
@@ -246,7 +243,6 @@ namespace KerbalFX.AeroFX
             }
             activeSlotCount = resultCount;
 
-            bool shouldLog = vessel == FlightGlobals.ActiveVessel && (forceLog || AeroFxConfig.DebugLogging);
             if (shouldLog)
             {
                 string anchorScanMessage = Localizer.Format(
@@ -374,7 +370,7 @@ namespace KerbalFX.AeroFX
             float mach01 = Mathf.InverseLerp(AeroFxRuntimeConfig.MinMach, AeroFxRuntimeConfig.FullMach, mach);
             float load01 = Mathf.InverseLerp(AeroFxRuntimeConfig.MinLoadFactor, AeroFxRuntimeConfig.FullLoadFactor, loadFactor);
             float nearGround01 = 1f - Mathf.InverseLerp(1200f, 9000f, radarAltitude);
-            float angularMotion = vessel.angularVelocity != Vector3.zero
+            float angularMotion = vessel.angularVelocity.sqrMagnitude > 0f
                 ? vessel.angularVelocity.magnitude
                 : 0f;
             float maneuverCurl = Mathf.InverseLerp(1.08f, 2.60f, loadFactor);
@@ -385,16 +381,15 @@ namespace KerbalFX.AeroFX
             float maneuverBias = Mathf.Lerp(0.48f + 0.22f * mach01, 1f, load01);
             float nearGroundBias = Mathf.Lerp(1f, 1.15f, nearGround01 * density01);
             float visibilityBias = Mathf.Lerp(0.62f, 1.12f, Mathf.Max(load01, mach01 * 0.70f));
-            float activation = Mathf.Clamp01(baseCondense * speedBias * maneuverBias * nearGroundBias * visibilityBias);
+            float baseActivation = Mathf.Clamp01(baseCondense * speedBias * maneuverBias * nearGroundBias * visibilityBias);
             float speedActivationGate = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(50f, 85f, speed));
             float machThreshold = AeroFxRuntimeConfig.GetMachThreshold(AeroFxConfig.MachThresholdMode);
             float machThresholdGate = machThreshold > 0f
                 ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(machThreshold, machThreshold + AeroFxRuntimeConfig.MachThresholdFadeRange, mach))
                 : 1f;
             float bodyVisibility = AeroFxRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
-            activation *= speedActivationGate;
-            activation *= machThresholdGate;
-            activation *= bodyVisibility;
+            float gatedActivation = baseActivation * speedActivationGate * machThresholdGate;
+            float activation;
             if (AeroFxConfig.UseManeuverOnly)
             {
                 float targetManeuverGate = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.10f, 0.28f, angularMotion));
@@ -415,7 +410,10 @@ namespace KerbalFX.AeroFX
                 }
 
                 float maneuverLoadBoost = Mathf.Lerp(0.90f, 1.15f, maneuverCurl);
-                activation *= smoothedManeuverGate * maneuverLoadBoost;
+                float maneuverActivation = baseActivation * speedActivationGate * smoothedManeuverGate * maneuverLoadBoost;
+                activation = AeroFxConfig.MachThresholdMode == 0
+                    ? maneuverActivation
+                    : Mathf.Max(gatedActivation, maneuverActivation);
                 sample.ManeuverGate01 = smoothedManeuverGate;
             }
             else
@@ -423,7 +421,9 @@ namespace KerbalFX.AeroFX
                 smoothedManeuverGate = 1f;
                 hasSmoothedManeuverGate = false;
                 sample.ManeuverGate01 = 1f;
+                activation = gatedActivation;
             }
+            activation = Mathf.Clamp01(activation * bodyVisibility);
             if (activation < AeroFxRuntimeConfig.ActivationFloor)
                 activation = 0f;
 
@@ -445,37 +445,6 @@ namespace KerbalFX.AeroFX
             sample.Mach01 = mach01;
             sample.Load01 = load01;
             sample.NearGround01 = nearGround01;
-            Vector3 bodyPosition = (Vector3)vessel.mainBody.position;
-            Vector3 lightSamplePoint = vessel.rootPart != null
-                ? vessel.rootPart.transform.position
-                : bodyPosition;
-            Vector3 lightBodyUp = lightSamplePoint - bodyPosition;
-            float targetLightFactor = AeroFxConfig.UseLightAware
-                ? KerbalFxSunLight.GetBodyDaylightFactor(
-                    vessel,
-                    lightSamplePoint,
-                    lightBodyUp,
-                    AeroFxRuntimeConfig.LightDaylightFloor,
-                    AeroFxRuntimeConfig.LightShadowFloor)
-                : 1f;
-
-            if (!hasSmoothedLightFactor || !AeroFxConfig.UseLightAware)
-            {
-                smoothedLightFactor = targetLightFactor;
-                hasSmoothedLightFactor = true;
-            }
-            else
-            {
-                float lightFadeSpeed = targetLightFactor > smoothedLightFactor
-                    ? LightFadeInSpeed
-                    : LightFadeOutSpeed;
-                smoothedLightFactor = Mathf.Lerp(
-                    smoothedLightFactor,
-                    targetLightFactor,
-                    Mathf.Clamp01(dt * lightFadeSpeed));
-            }
-
-            sample.LightFactor = Mathf.Clamp01(smoothedLightFactor);
             float lengthBias = pressure01 * 0.26f + density01 * 0.16f + nearGround01 * 0.10f + load01 * 0.12f;
             float lowSpeedLengthBoost = 1f - Mathf.InverseLerp(110f, 200f, speed);
             float highSpeedShorten = 1f - Mathf.InverseLerp(120f, 320f, speed);

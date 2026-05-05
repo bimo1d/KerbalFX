@@ -12,18 +12,17 @@ namespace KerbalFX.AeroFX
             if (sharedTrailMaterial != null)
                 return sharedTrailMaterial;
 
-            Shader shader = KerbalFxUtil.FindParticleShader();
-            if (shader == null)
-                shader = KerbalFxUtil.FindTransparentShader();
-            if (shader == null)
+            sharedTrailMaterial = KerbalFxUtil.CreateParticleMaterial(
+                "KerbalFX_AeroTrailMaterial",
+                GetTrailTexture(),
+                false,
+                false,
+                true);
+            if (sharedTrailMaterial == null)
                 return null;
 
-            sharedTrailMaterial = new Material(shader);
-            sharedTrailMaterial.name = "KerbalFX_AeroTrailMaterial";
-            sharedTrailMaterial.color = Color.white;
             if (sharedTrailMaterial.HasProperty("_TintColor"))
                 sharedTrailMaterial.SetColor("_TintColor", Color.white);
-            sharedTrailMaterial.mainTexture = GetTrailTexture();
             sharedTrailMaterial.mainTextureScale = Vector2.one;
             sharedTrailMaterial.renderQueue = 3000;
             return sharedTrailMaterial;
@@ -36,10 +35,6 @@ namespace KerbalFX.AeroFX
 
             const int width = 128;
             const int height = 32;
-            sharedTrailTexture = new Texture2D(width, height, TextureFormat.ARGB32, false);
-            sharedTrailTexture.wrapMode = TextureWrapMode.Clamp;
-            sharedTrailTexture.filterMode = FilterMode.Bilinear;
-
             Color[] pixels = new Color[width * height];
             for (int y = 0; y < height; y++)
             {
@@ -59,8 +54,7 @@ namespace KerbalFX.AeroFX
                 }
             }
 
-            sharedTrailTexture.SetPixels(pixels);
-            sharedTrailTexture.Apply(false, true);
+            sharedTrailTexture = KerbalFxUtil.CreateProceduralTexture(width, height, pixels);
             return sharedTrailTexture;
         }
     }

@@ -178,8 +178,7 @@ namespace KerbalFX
             {
                 if (!e.Current.Value.IsStillValid())
                 {
-                    float invalidTimer;
-                    invalidTimers.TryGetValue(e.Current.Key, out invalidTimer);
+                    invalidTimers.TryGetValue(e.Current.Key, out var invalidTimer);
                     invalidTimer += refreshElapsed;
                     invalidTimers[e.Current.Key] = invalidTimer;
 
@@ -219,8 +218,7 @@ namespace KerbalFX
                 if (!IsSupportedVessel(vessel))
                     continue;
 
-                TController controller;
-                if (controllers.TryGetValue(vessel.id, out controller))
+                if (controllers.TryGetValue(vessel.id, out var controller))
                 {
                     TryRebuildController(controller, refreshElapsed);
                     continue;

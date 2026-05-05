@@ -21,22 +21,6 @@ namespace KerbalFX.ImpactPuffs
         protected override void OnBeforeStart()
         {
             ImpactPuffsRuntimeConfig.Refresh();
-            EngineGroundPuffEmitter.CleanupSunOcclusionCache(true);
-        }
-
-        protected override void OnFrameEnabled(float dt)
-        {
-            EngineGroundPuffEmitter.CleanupSunOcclusionCache(false);
-        }
-
-        protected override void OnFrameDisabled(float dt)
-        {
-            EngineGroundPuffEmitter.CleanupSunOcclusionCache(false);
-        }
-
-        protected override void OnBeforeDestroy()
-        {
-            EngineGroundPuffEmitter.CleanupSunOcclusionCache(true);
         }
 
         protected override bool IsSupportedVessel(Vessel vessel)
@@ -233,8 +217,7 @@ namespace KerbalFX.ImpactPuffs
 
             for (int i = 0; i < part.Modules.Count; i++)
             {
-                ModuleEngines engine = part.Modules[i] as ModuleEngines;
-                if (engine == null)
+                if (!(part.Modules[i] is ModuleEngines engine))
                 {
                     continue;
                 }

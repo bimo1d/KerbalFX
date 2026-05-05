@@ -1,17 +1,59 @@
 param(
-    [string]$CompilerPath
+    [string]$CompilerPath,
+    [string]$KspRoot
 )
 
 $ErrorActionPreference = "Stop"
 
-function Resolve-CompilerPath {
+function New-CompilerInvocation {
+    param([string]$Path)
+
+    $resolvedPath = (Resolve-Path $Path).Path
+    $extension = [System.IO.Path]::GetExtension($resolvedPath)
+    if ([string]::Equals($extension, ".dll", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+        if ($dotnet -eq $null) {
+            throw "dotnet command not found. Install .NET SDK or pass a csc.exe path with -CompilerPath."
+        }
+
+        return [pscustomobject]@{
+            Path = $dotnet.Source
+            PrefixArgs = @("exec", $resolvedPath)
+            DisplayPath = $resolvedPath
+            UsesRoslyn = $true
+            NeedsStandardReferences = $true
+        }
+    }
+
+    return [pscustomobject]@{
+        Path = $resolvedPath
+        PrefixArgs = @()
+        DisplayPath = $resolvedPath
+        UsesRoslyn = $false
+        NeedsStandardReferences = $false
+    }
+}
+
+function Resolve-Compiler {
     param([string]$ExplicitPath)
 
     if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
         if (-not (Test-Path $ExplicitPath)) {
             throw "Compiler not found: $ExplicitPath"
         }
-        return (Resolve-Path $ExplicitPath).Path
+        return New-CompilerInvocation -Path $ExplicitPath
+    }
+
+    $dotnetSdkDir = Join-Path $env:ProgramFiles "dotnet\sdk"
+    if (Test-Path $dotnetSdkDir) {
+        $sdkDirs = Get-ChildItem -Path $dotnetSdkDir -Directory |
+            Sort-Object Name -Descending
+        foreach ($sdkDir in $sdkDirs) {
+            $candidate = Join-Path $sdkDir.FullName "Roslyn\bincore\csc.dll"
+            if (Test-Path $candidate) {
+                return New-CompilerInvocation -Path $candidate
+            }
+        }
     }
 
     $candidates = @(
@@ -21,7 +63,7 @@ function Resolve-CompilerPath {
 
     foreach ($candidate in $candidates) {
         if (Test-Path $candidate) {
-            return $candidate
+            return New-CompilerInvocation -Path $candidate
         }
     }
 
@@ -30,13 +72,27 @@ function Resolve-CompilerPath {
 
 $repoRoot = $PSScriptRoot
 $gameDataDir = Split-Path $repoRoot -Parent
-$kspRoot = Split-Path $gameDataDir -Parent
+if ([string]::IsNullOrWhiteSpace($KspRoot)) {
+    $kspRoot = Split-Path $gameDataDir -Parent
+}
+else {
+    if (-not (Test-Path $KspRoot)) {
+        throw "KSP root not found: $KspRoot"
+    }
+    $kspRoot = (Resolve-Path $KspRoot).Path
+}
 $managedDir = Join-Path $kspRoot "KSP_x64_Data\Managed"
 $buildTempDir = Join-Path $repoRoot ".build"
 
 if (-not (Test-Path $managedDir)) {
     throw "KSP managed folder not found: $managedDir"
 }
+
+$standardReferenceNames = @(
+    "mscorlib.dll",
+    "System.dll",
+    "System.Core.dll"
+)
 
 $referenceNames = @(
     "Assembly-CSharp.dll",
@@ -48,12 +104,21 @@ $referenceNames = @(
     "UnityEngine.AnimationModule.dll",
     "UnityEngine.IMGUIModule.dll",
     "UnityEngine.InputLegacyModule.dll",
+    "UnityEngine.TextRenderingModule.dll",
     "UnityEngine.UI.dll"
 )
 
 function Get-ManagedReferenceArgs {
+    param([bool]$IncludeStandardReferences)
+
     $args = @()
-    foreach ($name in $referenceNames) {
+    $names = @()
+    if ($IncludeStandardReferences) {
+        $names += $standardReferenceNames
+    }
+    $names += $referenceNames
+
+    foreach ($name in $names) {
         $path = Join-Path $managedDir $name
         if (-not (Test-Path $path)) {
             throw "Missing reference assembly: $path"
@@ -113,7 +178,7 @@ function Ensure-OutputDirectory {
 
 function Compile-Assembly {
     param(
-        [string]$Compiler,
+        [object]$Compiler,
         [object]$Spec,
         [string[]]$ManagedReferenceArgs
     )
@@ -136,9 +201,20 @@ function Compile-Assembly {
         "/optimize+",
         "/debug-",
         "/out:$($Spec.TempOutputPath)"
-    ) + $ManagedReferenceArgs + (Get-AdditionalReferenceArgs -ReferencePaths $Spec.AdditionalReferencePaths) + $sourceFiles
+    )
+    if ($Compiler.UsesRoslyn) {
+        $compilerArgs += @(
+            "/nostdlib+",
+            "/langversion:7.3"
+        )
+    }
+    $compilerArgs += $ManagedReferenceArgs + (Get-AdditionalReferenceArgs -ReferencePaths $Spec.AdditionalReferencePaths) + $sourceFiles
 
-    & $Compiler @compilerArgs
+    $allCompilerArgs = $Compiler.PrefixArgs + $compilerArgs
+    $compilerOutput = & $Compiler.Path @allCompilerArgs 2>&1
+    foreach ($outLine in $compilerOutput) {
+        Write-Host $outLine
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Compiler exited with code $LASTEXITCODE for $($Spec.Id)"
     }
@@ -195,8 +271,10 @@ if (-not ($coreSourceFiles | Where-Object { $_ -like "*Core\PluginSource\KerbalF
     throw "Missing required shared source file: Core\PluginSource\KerbalFX_VesselControllerBootstrap.cs"
 }
 
-$compiler = Resolve-CompilerPath -ExplicitPath $CompilerPath
-$managedReferenceArgs = Get-ManagedReferenceArgs
+$compiler = Resolve-Compiler -ExplicitPath $CompilerPath
+$managedReferenceArgs = Get-ManagedReferenceArgs -IncludeStandardReferences $compiler.NeedsStandardReferences
+
+Write-Host "Compiler: $($compiler.DisplayPath)"
 
 try {
     foreach ($spec in $assemblySpecs) {

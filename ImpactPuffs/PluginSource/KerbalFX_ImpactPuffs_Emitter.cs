@@ -12,44 +12,61 @@ namespace KerbalFX.ImpactPuffs
         private readonly ModuleEngines engine;
         private readonly List<Transform> thrustTransforms;
         private readonly GameObject root;
-        private readonly ParticleSystem particleSystem;
         private readonly VolumetricPlumeField volumetricField;
         private readonly string debugId;
 
         private bool disposed;
-        private float smoothedRate;
-        private float profileRefreshTimer;
-        private float colorRefreshTimer;
         private float debugTimer;
         private float suppressionLogTimer;
         private float groundDebugLogTimer;
         private float lastCenteredness;
         private Vector3 smoothedTangent;
         private Vector3 smoothedNormal;
-        private float startupRampTimer;
         private float ignitionPrimeTimer;
         private bool wasEngineIgnited;
 
         private KerbalFxRevisionStamp appliedProfileRevision;
         private int engineClusterCount = 1;
 
-        private Color currentColor = new Color(0.72f, 0.68f, 0.61f, 1f);
-        private float cachedLightFactor = 1f;
         private float cachedBodyVisibility = 1f;
+        private KerbalFxLightAwareEntry cachedLightAwareEntry;
+        private string cachedLightAwareBodyName = string.Empty;
+        private bool hasCachedLightAwareEntry;
+        private float surfaceColorDebugTimer;
+        private float lightAwareDebugTimer;
+        private readonly KerbalFxSurfaceColorSampler surfaceColor = new KerbalFxSurfaceColorSampler(
+            KerbalFxDustVisualDefaults.Color,
+            SurfaceColorBlendStrength,
+            SurfaceColorRefreshSeconds,
+            SurfaceColorSmoothingSpeed,
+            SurfaceColorAllowRendererFallback,
+            ImpactPuffsRuntimeConfig.TintProfile);
+        private readonly KerbalFxLightAwareSampler lightAware = new KerbalFxLightAwareSampler(
+            LightAwareRefreshSeconds,
+            LightAwareSmoothingSpeed,
+            LightAwareUseShadowProbe,
+            LightAwareSampleLocalLights);
 
-        private const float BaseAlpha = 0.60f;
-        private const float StartupRampDuration = 0.25f;
+        internal const float ModeQualityScale = 1.70f;
         private const float IgnitionPrimeDuration = 1.20f;
         private const float TerrainGateMultiplier = 1.35f;
         private const float TerrainGateOffset = 6f;
         private const float MaxTargetRateSingle = 18000f;
         private const float MaxTargetRateMulti = 7500f;
-        private const float SunOcclusionRayDistance = 1200f;
         private const float DebugEmitterInterval = 1.2f;
-        private const float ColorRefreshInterval = 0.25f;
         private const float SuppressionLogInterval = 1.5f;
         private const float GroundDebugLogInterval = 0.35f;
-        private const float ProfileRefreshInterval = 0.33f;
+        private const float SurfaceColorDebugInterval = 1.5f;
+        private const float SurfaceColorBlendStrength = 0.32f;
+        private const float SurfaceColorRefreshSeconds = 0.45f;
+        private const float SurfaceColorSmoothingSpeed = 1.6f;
+        private const bool SurfaceColorAllowRendererFallback = false;
+        private const float LightAwareRefreshSeconds = 0.28f;
+        private const float LightAwareSmoothingSpeed = 1.4f;
+        private const bool LightAwareUseShadowProbe = true;
+        private const bool LightAwareSampleLocalLights = false;
+        private const float LightAwareEngineStrength = 1.00f;
+        private const float LightAwareDebugInterval = 1.6f;
         private static readonly string[] LaunchsiteSurfaceTokens =
         {
             "launchpad",
@@ -63,65 +80,6 @@ namespace KerbalFX.ImpactPuffs
         private const int ScaledSceneryLayer = 10;
         private static readonly int TerrainRaycastMask = Physics.DefaultRaycastLayers & ~(1 << ScaledSceneryLayer);
         private static readonly RaycastHit[] SharedHits = new RaycastHit[24];
-        private static readonly RaycastHit[] SunOcclusionHits = new RaycastHit[16];
-        private static readonly Dictionary<Guid, SunOcclusionCacheEntry> SunOcclusionCache = new Dictionary<Guid, SunOcclusionCacheEntry>();
-        private static readonly List<Guid> SunOcclusionRemoveIds = new List<Guid>(32);
-        private static readonly AnimationCurve SharedSizeOverLifetimeCurve = CreateSizeOverLifetimeCurve();
-        private const float SunOcclusionPurgeIntervalSeconds = 900f;
-        private static float nextSunOcclusionPurgeAt;
-        private static Gradient cachedColorOverLifetimeGradient;
-        private static float cachedColorOverLifetimeAlpha = -1f;
-
-        private struct SunOcclusionCacheEntry
-        {
-            public bool Occluded;
-            public float ValidUntil;
-            public Vector3 SamplePoint;
-            public Vector3 SunDirection;
-        }
-
-        public static void CleanupSunOcclusionCache(bool force)
-        {
-            if (force)
-            {
-                SunOcclusionCache.Clear();
-                SunOcclusionRemoveIds.Clear();
-                nextSunOcclusionPurgeAt = Time.time + SunOcclusionPurgeIntervalSeconds;
-                return;
-            }
-
-            float now = Time.time;
-            if (now < nextSunOcclusionPurgeAt)
-            {
-                return;
-            }
-
-            nextSunOcclusionPurgeAt = now + SunOcclusionPurgeIntervalSeconds;
-            if (SunOcclusionCache.Count == 0)
-            {
-                return;
-            }
-
-            SunOcclusionRemoveIds.Clear();
-            var e = SunOcclusionCache.GetEnumerator();
-            while (e.MoveNext())
-            {
-                SunOcclusionCacheEntry entry = e.Current.Value;
-                bool cacheExpired = entry.ValidUntil + 2f < now;
-                Vessel vessel = FlightGlobals.FindVessel(e.Current.Key);
-                bool vesselInvalid = vessel == null || !vessel.loaded || vessel.packed;
-                if (cacheExpired || vesselInvalid)
-                {
-                    SunOcclusionRemoveIds.Add(e.Current.Key);
-                }
-            }
-            e.Dispose();
-
-            for (int i = 0; i < SunOcclusionRemoveIds.Count; i++)
-            {
-                SunOcclusionCache.Remove(SunOcclusionRemoveIds[i]);
-            }
-        }
 
         public EngineGroundPuffEmitter(Part part, ModuleEngines engine, List<Transform> thrustTransforms)
         {
@@ -137,8 +95,6 @@ namespace KerbalFX.ImpactPuffs
             root.transform.position = GetThrustOrigin();
             root.layer = part.gameObject.layer;
 
-            particleSystem = root.AddComponent<ParticleSystem>();
-            ConfigureParticleSystemBase();
             ApplyRuntimeVisualProfile(true);
             volumetricField = new VolumetricPlumeField(root.transform, part.gameObject.layer);
         }
@@ -171,7 +127,7 @@ namespace KerbalFX.ImpactPuffs
                 return;
             }
 
-            RefreshRuntimeProfileIfNeeded(dt);
+            ApplyRuntimeVisualProfile(false);
 
             if (ShouldSkipForVesselState(vessel, dt))
             {
@@ -217,8 +173,6 @@ namespace KerbalFX.ImpactPuffs
                 out pressure,
                 out thrustPowerNorm);
 
-            targetRate = ApplyLightAwarenessRate(vessel, groundHit, normalizedThrust, targetRate);
-
             Vector3 stableNormal;
             Vector3 outwardDirForCoreClamp;
             Vector3 finalPosition = ComputeEmitterPosition(
@@ -230,17 +184,14 @@ namespace KerbalFX.ImpactPuffs
 
             root.transform.position = finalPosition;
 
-            UpdateVolumetricFrame(vessel, finalPosition, stableNormal, outwardDirForCoreClamp, exhaustDirection, pressure, dt);
+            UpdateVolumetricFrame(vessel, finalPosition, stableNormal, outwardDirForCoreClamp, exhaustDirection, dt);
 
-            colorRefreshTimer -= dt;
-            if (colorRefreshTimer <= 0f)
-            {
-                colorRefreshTimer = ColorRefreshInterval;
-                UpdateSurfaceColor(vessel, groundHit.collider);
-                ApplyCurrentStartColor();
-            }
+            UpdateSurfaceColor(vessel, groundHit, dt);
+            UpdateLightAware(vessel, groundHit, dt);
+            targetRate *= GetLightAwareRateMultiplier();
+            LogSurfaceSampleIfNeeded(vessel, dt);
+            LogLightSampleIfNeeded(vessel, dt);
 
-            SetTargetRate(0f, dt);
             if (volumetricField != null)
             {
                 volumetricField.Update(
@@ -250,10 +201,10 @@ namespace KerbalFX.ImpactPuffs
                     pressure,
                     qualityNorm,
                     ImpactPuffsConfig.GetQualityScaleMultiplier(),
-                    currentColor,
-                    cachedLightFactor,
+                    GetCurrentDustColor(),
                     lastCenteredness,
                     engineClusterCount,
+                    GetLightAwareVisualAlphaMultiplier(),
                     dt
                 );
             }
@@ -331,7 +282,7 @@ namespace KerbalFX.ImpactPuffs
                 normalizedThrust = Mathf.Max(normalizedThrust, ignitionAssist);
             }
 
-            if (normalizedThrust < 0.005f)
+            if (normalizedThrust < ImpactPuffsRuntimeConfig.MinNormalizedThrust)
             {
                 StopAllEmission(dt, false);
                 return false;
@@ -461,7 +412,7 @@ namespace KerbalFX.ImpactPuffs
             out float pressure,
             out float thrustPowerNorm)
         {
-            float quality = GetModeQualityScale();
+            float quality = ModeQualityScale;
             qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
             float qualityRateScale = 1f + (Mathf.Pow(quality, 1.50f) - 1f) * 1.35f;
 
@@ -500,23 +451,6 @@ namespace KerbalFX.ImpactPuffs
             return Mathf.Clamp(targetRate, 0f, rateCap);
         }
 
-        private float ApplyLightAwarenessRate(Vessel vessel, RaycastHit groundHit, float normalizedThrust, float targetRate)
-        {
-            if (ImpactPuffsConfig.UseLightAware)
-            {
-                cachedLightFactor = EvaluateVolumetricLightFactor(vessel, groundHit.point, groundHit.normal, normalizedThrust);
-
-                float volumetricLightRate = Mathf.Pow(Mathf.Clamp01(cachedLightFactor), 0.65f);
-                volumetricLightRate = Mathf.Lerp(0.28f, 1f, volumetricLightRate);
-                targetRate *= volumetricLightRate;
-            }
-            else
-            {
-                cachedLightFactor = 1f;
-            }
-
-            return targetRate;
-        }
 
         private Vector3 ComputeEmitterPosition(
             Vessel vessel,
@@ -587,17 +521,6 @@ namespace KerbalFX.ImpactPuffs
             return finalPosition;
         }
 
-        private void RefreshRuntimeProfileIfNeeded(float dt)
-        {
-            profileRefreshTimer -= dt;
-            if (profileRefreshTimer <= 0f
-                || appliedProfileRevision.NeedsApply(ImpactPuffsConfig.Revision, ImpactPuffsRuntimeConfig.Revision))
-            {
-                profileRefreshTimer = ProfileRefreshInterval;
-                ApplyRuntimeVisualProfile(false);
-            }
-        }
-
         private void LogEmitterDebug(
             Vessel vessel,
             float dt,
@@ -622,14 +545,18 @@ namespace KerbalFX.ImpactPuffs
             }
 
             debugTimer = DebugEmitterInterval;
+            string lightDescriptor = ImpactPuffsConfig.UseLightAware
+                ? KerbalFxLightFormat.Describe(lightAware.Current, string.Empty)
+                + " mul=" + GetLightAwareAlphaMultiplier().ToString("F2", CultureInfo.InvariantCulture)
+                : "off";
             ImpactPuffsLog.DebugLog(Localizer.Format(
                 ImpactPuffsLoc.LogEngineEmitter,
                 debugId,
                 normalizedThrust.ToString("F2", CultureInfo.InvariantCulture),
                 groundDistance.ToString("F2", CultureInfo.InvariantCulture),
                 displayedRate.ToString("F1", CultureInfo.InvariantCulture),
-                cachedLightFactor.ToString("F2", CultureInfo.InvariantCulture)
-                + " pressure=" + pressure.ToString("F2", CultureInfo.InvariantCulture)
+                lightDescriptor
+                + " | pressure=" + pressure.ToString("F2", CultureInfo.InvariantCulture)
                 + " align=" + alignment.ToString("F2", CultureInfo.InvariantCulture)
                 + " bodyAlign=" + exhaustToBodyDown.ToString("F2", CultureInfo.InvariantCulture)
                 + " terrainH=" + terrainHeight.ToString("F1", CultureInfo.InvariantCulture)
@@ -652,10 +579,6 @@ namespace KerbalFX.ImpactPuffs
             }
 
             disposed = true;
-            if (particleSystem != null)
-            {
-                particleSystem.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-            }
             if (volumetricField != null)
             {
                 volumetricField.Dispose();
@@ -669,7 +592,6 @@ namespace KerbalFX.ImpactPuffs
 
         private void StopAllEmission(float dt, bool immediateVolumetric)
         {
-            SetTargetRate(0f, dt);
             if (volumetricField == null)
             {
                 return;
@@ -687,17 +609,8 @@ namespace KerbalFX.ImpactPuffs
 
         private void HardResetEmissionState()
         {
-            startupRampTimer = Mathf.Min(startupRampTimer, StartupRampDuration * 0.50f);
-            smoothedRate = 0f;
             lastCenteredness = 0f;
             ResetGroundAnchorState(true);
-
-            if (particleSystem != null)
-            {
-                ParticleSystem.EmissionModule emission = particleSystem.emission;
-                emission.rateOverTime = 0f;
-                particleSystem.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-            }
 
             if (volumetricField != null)
             {
@@ -798,54 +711,6 @@ namespace KerbalFX.ImpactPuffs
                 colliderName));
         }
 
-        private void ConfigureParticleSystemBase()
-        {
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = true;
-            main.playOnAwake = false;
-            main.simulationSpace = ParticleSystemSimulationSpace.World;
-            main.startColor = new Color(currentColor.r, currentColor.g, currentColor.b, BaseAlpha);
-            main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
-
-            ParticleSystem.EmissionModule emission = particleSystem.emission;
-            emission.enabled = true;
-            emission.rateOverTime = 0f;
-
-            ParticleSystem.ShapeModule shape = particleSystem.shape;
-            shape.enabled = true;
-            shape.shapeType = ParticleSystemShapeType.Cone;
-            shape.angle = 68f;
-            shape.radius = 1.10f;
-
-            ParticleSystem.VelocityOverLifetimeModule velocity = particleSystem.velocityOverLifetime;
-            velocity.enabled = true;
-            velocity.space = ParticleSystemSimulationSpace.Local;
-            velocity.x = new ParticleSystem.MinMaxCurve(-2.20f, 2.40f);
-            velocity.y = new ParticleSystem.MinMaxCurve(0.10f, 0.75f);
-            velocity.z = new ParticleSystem.MinMaxCurve(-2.00f, 2.00f);
-            velocity.radial = new ParticleSystem.MinMaxCurve(0.45f, 1.20f);
-
-            ParticleSystem.NoiseModule noise = particleSystem.noise;
-            noise.enabled = true;
-            noise.strength = 0.90f;
-            noise.frequency = 0.55f;
-            noise.scrollSpeed = 0.35f;
-            noise.damping = true;
-
-            ParticleSystem.ColorOverLifetimeModule colorOverLifetime = particleSystem.colorOverLifetime;
-            colorOverLifetime.enabled = true;
-
-            ParticleSystemRenderer renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
-            renderer.renderMode = ParticleSystemRenderMode.Billboard;
-            renderer.sortingFudge = 2f;
-
-            Material material = ImpactPuffsAssets.GetSharedMaterial();
-            if (material != null)
-            {
-                renderer.sharedMaterial = material;
-            }
-        }
-
         private void ApplyRuntimeVisualProfile(bool force)
         {
             if (appliedProfileRevision.ShouldSkipApply(force, ImpactPuffsConfig.Revision, ImpactPuffsRuntimeConfig.Revision))
@@ -854,90 +719,10 @@ namespace KerbalFX.ImpactPuffs
             }
 
             appliedProfileRevision.MarkApplied(ImpactPuffsConfig.Revision, ImpactPuffsRuntimeConfig.Revision);
-
-            float quality = GetModeQualityScale();
-            float qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
-            float qualityScale = ImpactPuffsConfig.GetQualityScaleMultiplier();
-            float volumetricBoost = 1.30f;
-
-            ParticleSystem.MainModule main = particleSystem.main;
-            float maxParticles = 2200f
-                * (1f + (Mathf.Pow(quality, 1.25f) - 1f) * 1.15f)
-                * volumetricBoost
-                * ImpactPuffsRuntimeConfig.MaxParticlesMultiplier
-                * ImpactPuffsRuntimeConfig.SharedMaxParticlesMultiplier
-                * qualityScale;
-            main.maxParticles = Mathf.RoundToInt(Mathf.Clamp(maxParticles, 480f, Mathf.Max(480f, 22000f * qualityScale)));
-
-            float minSize = 0.22f * Mathf.Lerp(0.72f, 1.70f, qualityNorm) * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier * ImpactPuffsRuntimeConfig.SharedRadiusScaleMultiplier;
-            float maxSize = 0.72f * Mathf.Lerp(0.72f, 1.70f, qualityNorm) * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier * ImpactPuffsRuntimeConfig.SharedRadiusScaleMultiplier;
-            main.startSize = new ParticleSystem.MinMaxCurve(minSize, maxSize);
-
-            main.startLifetime = new ParticleSystem.MinMaxCurve(
-                0.78f * Mathf.Lerp(0.90f, 1.38f, qualityNorm),
-                3.35f * Mathf.Lerp(0.90f, 1.45f, qualityNorm) * volumetricBoost
-            );
-            main.startSpeed = new ParticleSystem.MinMaxCurve(0.12f, Mathf.Lerp(0.45f, 1.20f, qualityNorm));
-            main.gravityModifier = Mathf.Lerp(0.004f, 0.018f, qualityNorm);
-
-            ParticleSystem.ShapeModule shape = particleSystem.shape;
-            shape.angle = Mathf.Lerp(58f, 86f, qualityNorm);
-            shape.radius = Mathf.Lerp(0.75f, 2.60f, qualityNorm) * ImpactPuffsRuntimeConfig.RadiusScaleMultiplier * ImpactPuffsRuntimeConfig.SharedRadiusScaleMultiplier;
-
-            ParticleSystem.SizeOverLifetimeModule sizeOverLifetime = particleSystem.sizeOverLifetime;
-            sizeOverLifetime.enabled = true;
-            sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, SharedSizeOverLifetimeCurve);
-
-            ParticleSystem.ColorOverLifetimeModule colorOverLifetime = particleSystem.colorOverLifetime;
-            float colorAlpha = Mathf.Lerp(0.30f, 0.56f, qualityNorm) * volumetricBoost;
-            colorOverLifetime.color = GetOrCreateColorOverLifetimeGradient(colorAlpha);
-
-            ParticleSystemRenderer renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
-            renderer.maxParticleSize = Mathf.Lerp(0.24f, 0.62f, qualityNorm);
-
-            ApplyCurrentStartColor();
-
-            ParticleSystem.EmissionModule emission = particleSystem.emission;
-            if (smoothedRate < 0.01f)
-            {
-                emission.rateOverTime = 0f;
-            }
+            ClearLightAwareEntryCache();
         }
 
-        private static AnimationCurve CreateSizeOverLifetimeCurve()
-        {
-            AnimationCurve curve = new AnimationCurve();
-            curve.AddKey(0f, 0.55f);
-            curve.AddKey(0.48f, 1.95f);
-            curve.AddKey(1f, 0.25f);
-            return curve;
-        }
-
-        private static Gradient GetOrCreateColorOverLifetimeGradient(float alphaAtStart)
-        {
-            if (cachedColorOverLifetimeGradient != null && Mathf.Abs(cachedColorOverLifetimeAlpha - alphaAtStart) < 0.001f)
-            {
-                return cachedColorOverLifetimeGradient;
-            }
-
-            cachedColorOverLifetimeAlpha = alphaAtStart;
-            cachedColorOverLifetimeGradient = new Gradient();
-            cachedColorOverLifetimeGradient.SetKeys(
-                new GradientColorKey[]
-                {
-                    new GradientColorKey(Color.white, 0f),
-                    new GradientColorKey(Color.white, 1f)
-                },
-                new GradientAlphaKey[]
-                {
-                    new GradientAlphaKey(alphaAtStart, 0f),
-                    new GradientAlphaKey(0f, 1f)
-                }
-            );
-            return cachedColorOverLifetimeGradient;
-        }
-
-        private void UpdateVolumetricFrame(Vessel vessel, Vector3 plumePosition, Vector3 surfaceNormal, Vector3 outwardHint, Vector3 exhaustDirection, float pressure, float dt)
+        private void UpdateVolumetricFrame(Vessel vessel, Vector3 plumePosition, Vector3 surfaceNormal, Vector3 outwardHint, Vector3 exhaustDirection, float dt)
         {
             UpdateVolumetricFrameSingle(vessel, plumePosition, surfaceNormal, outwardHint, exhaustDirection, dt);
         }
@@ -1015,39 +800,6 @@ namespace KerbalFX.ImpactPuffs
 
             root.transform.position = plumePosition;
             root.transform.rotation = Quaternion.LookRotation(smoothedNormal, awayFromVessel);
-        }
-
-        private void SetTargetRate(float targetRate, float dt)
-        {
-            if (targetRate > 0.25f)
-            {
-                startupRampTimer = Mathf.Min(StartupRampDuration, startupRampTimer + Mathf.Max(0f, dt));
-            }
-            else
-            {
-                startupRampTimer = Mathf.Max(0f, startupRampTimer - Mathf.Max(0f, dt) * 1.8f);
-            }
-            float startupFactor = Mathf.Lerp(0.18f, 1f, Mathf.Clamp01(startupRampTimer / StartupRampDuration));
-            targetRate *= startupFactor;
-
-            float smoothingSpeed = targetRate > smoothedRate ? 4.5f : 7.50f;
-            float lerpSpeed = Mathf.Clamp01(dt * smoothingSpeed);
-            smoothedRate = Mathf.Lerp(smoothedRate, targetRate, lerpSpeed);
-
-            ParticleSystem.EmissionModule emission = particleSystem.emission;
-            emission.rateOverTime = smoothedRate;
-
-            if (smoothedRate > 0.18f)
-            {
-                if (!particleSystem.isPlaying)
-                {
-                    particleSystem.Play(true);
-                }
-            }
-            else if (particleSystem.isPlaying)
-            {
-                particleSystem.Stop(true, ParticleSystemStopBehavior.StopEmitting);
-            }
         }
 
         private Vector3 GetPrimaryExhaustDirection()
@@ -1188,11 +940,6 @@ namespace KerbalFX.ImpactPuffs
             return firstName + "x" + transforms.Count.ToString(CultureInfo.InvariantCulture);
         }
 
-        internal static float GetModeQualityScale()
-        {
-            return 1.70f;
-        }
-
         private static float GetNormalizedLiveThrust(ModuleEngines module)
         {
             if (module == null)
@@ -1231,38 +978,136 @@ namespace KerbalFX.ImpactPuffs
             return Mathf.Clamp(scale, ImpactPuffsRuntimeConfig.EngineCountMinScale, 1f);
         }
 
-        private void UpdateSurfaceColor(Vessel vessel, Collider collider)
+        internal float GetLightAwareAlphaMultiplier()
         {
-            Color bodyColor = KerbalFxSurfaceColor.GetBaseDustColor(vessel);
-            Color finalColor = bodyColor;
-
-            Color colliderColor;
-            if (KerbalFxSurfaceColor.TryGetColliderColor(collider, out colliderColor))
-            {
-                finalColor = KerbalFxSurfaceColor.BlendWithColliderColor(bodyColor, colliderColor);
-            }
-
-            Color toned = KerbalFxSurfaceColor.NormalizeDustTone(finalColor);
-            Color softWhite = new Color(0.90f, 0.90f, 0.89f);
-            currentColor = Color.Lerp(toned, softWhite, 0.18f);
+            if (!ImpactPuffsConfig.UseLightAware)
+                return 1f;
+            return lightAware.GetAlphaMultiplier(
+                GetLightAwareEntry(),
+                LightAwareEngineStrength);
         }
 
-        private void ApplyCurrentStartColor()
+        internal float GetLightAwareVisualAlphaMultiplier()
         {
-            if (particleSystem == null)
+            return KerbalFxLightingCore.ApplySurfaceBoost(GetLightAwareAlphaMultiplier());
+        }
+
+        private float GetLightAwareRateMultiplier()
+        {
+            return KerbalFxLightingCore.ApplyRateCap(GetLightAwareVisualAlphaMultiplier());
+        }
+
+        private Color GetCurrentDustColor()
+        {
+            Color baseColor = ImpactPuffsConfig.AdaptSurfaceColor ? surfaceColor.CurrentColor : KerbalFxDustVisualDefaults.Color;
+            if (!ImpactPuffsConfig.UseLightAware)
+                return baseColor;
+            return lightAware.ApplyColorTint(
+                baseColor,
+                GetLightAwareEntry(),
+                LightAwareEngineStrength);
+        }
+
+        private KerbalFxLightAwareEntry GetLightAwareEntry()
+        {
+            string bodyName = part != null && part.vessel != null && part.vessel.mainBody != null
+                ? part.vessel.mainBody.bodyName
+                : string.Empty;
+            if (!hasCachedLightAwareEntry || bodyName != cachedLightAwareBodyName)
+            {
+                cachedLightAwareBodyName = bodyName;
+                cachedLightAwareEntry = ImpactPuffsRuntimeConfig.LightAwareProfile.Get(bodyName);
+                hasCachedLightAwareEntry = true;
+            }
+            return cachedLightAwareEntry;
+        }
+
+        private void ClearLightAwareEntryCache()
+        {
+            cachedLightAwareBodyName = string.Empty;
+            cachedLightAwareEntry = KerbalFxLightAwareEntry.Default;
+            hasCachedLightAwareEntry = false;
+        }
+
+        private void UpdateSurfaceColor(Vessel vessel, RaycastHit groundHit, float dt)
+        {
+            if (!ImpactPuffsConfig.AdaptSurfaceColor)
+            {
+                surfaceColor.Reset();
+                return;
+            }
+
+            surfaceColor.Tick(vessel, groundHit.point, groundHit.collider, dt);
+        }
+
+        private void UpdateLightAware(Vessel vessel, RaycastHit groundHit, float dt)
+        {
+            if (!ImpactPuffsConfig.UseLightAware)
+            {
+                if (!lightAware.IsReset)
+                {
+                    lightAware.Reset();
+                    ClearLightAwareEntryCache();
+                }
+                return;
+            }
+
+            Vector3 normal = groundHit.normal.sqrMagnitude > 0.0001f ? groundHit.normal : Vector3.zero;
+            lightAware.Tick(vessel, groundHit.point, normal, dt);
+        }
+
+        internal KerbalFxLightSample CurrentLightSample
+        {
+            get { return lightAware.Current; }
+        }
+
+        private void LogLightSampleIfNeeded(Vessel vessel, float dt)
+        {
+            if (!ImpactPuffsConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel || !ImpactPuffsConfig.UseLightAware)
             {
                 return;
             }
 
-            float volumetricBoost = 1.15f;
-            float baseAlpha = BaseAlpha * 0.68f * volumetricBoost;
-            float alpha = baseAlpha * Mathf.Lerp(0.26f, 0.92f, Mathf.Clamp01(cachedLightFactor));
-            alpha *= Mathf.Lerp(0.92f, 1.12f, Mathf.Clamp01((cachedBodyVisibility - 1f) / 0.75f));
-            float alphaCap = 0.68f;
-            alpha = Mathf.Clamp(alpha, 0f, alphaCap);
+            float multiplier = GetLightAwareAlphaMultiplier();
+            KerbalFxLightDebugReporter.Report("ImpactPuffs", debugId, lightAware.Current, multiplier, LightAwareEngineStrength);
 
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.startColor = new Color(currentColor.r, currentColor.g, currentColor.b, alpha);
+            lightAwareDebugTimer -= dt;
+            if (lightAwareDebugTimer > 0f)
+            {
+                return;
+            }
+
+            lightAwareDebugTimer = LightAwareDebugInterval;
+            ImpactPuffsLog.DebugLog(Localizer.Format(
+                ImpactPuffsLoc.LogLightSample,
+                debugId,
+                KerbalFxLightFormat.Describe(lightAware.Current, string.Empty),
+                multiplier.ToString("F2", CultureInfo.InvariantCulture)));
+        }
+
+        private void LogSurfaceSampleIfNeeded(Vessel vessel, float dt)
+        {
+            if (!ImpactPuffsConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel || !ImpactPuffsConfig.AdaptSurfaceColor)
+            {
+                return;
+            }
+
+            surfaceColorDebugTimer -= dt;
+            if (surfaceColorDebugTimer > 0f)
+            {
+                return;
+            }
+
+            surfaceColorDebugTimer = SurfaceColorDebugInterval;
+            ImpactPuffsLog.DebugLog(Localizer.Format(
+                ImpactPuffsLoc.LogSurfaceSample,
+                debugId,
+                string.IsNullOrEmpty(surfaceColor.LastBodyName) ? "n/a" : surfaceColor.LastBodyName,
+                string.IsNullOrEmpty(surfaceColor.LastBiomeName) ? "n/a" : surfaceColor.LastBiomeName,
+                surfaceColor.LastSource.ToString(),
+                KerbalFxSurfaceColorCore.FormatColor(surfaceColor.LastRawSample),
+                KerbalFxSurfaceColorCore.FormatColor(surfaceColor.TargetColor),
+                KerbalFxSurfaceColorCore.FormatColor(surfaceColor.CurrentColor)));
         }
 
     }

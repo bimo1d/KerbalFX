@@ -7,6 +7,8 @@ FX module for separators and decouplers.
 - Triggers blast effects on supported separator parts.
 - Spawns sparks, smoke, and chunk fragments for separators.
 - Softer smoke-puff burst for ordinary decouplers.
+- Gas venting effect when docking ports undock. WIP.
+- Lingering debris field for separations in space.
 - Size-based effects scaling.
 - Distance LOD and pooled particle systems.
 - Supports optional detached-ring despawn flow and hidden-ring cleanup logic.
