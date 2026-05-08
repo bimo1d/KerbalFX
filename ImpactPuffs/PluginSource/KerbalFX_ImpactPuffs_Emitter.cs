@@ -6,6 +6,27 @@ using UnityEngine;
 
 namespace KerbalFX.ImpactPuffs
 {
+    internal struct EngineGroundPuffFrame
+    {
+        public EngineGroundPuffEmitter Emitter;
+        public Vector3 Position;
+        public Vector3 ClusterPosition;
+        public Vector3 StableNormal;
+        public Vector3 OutwardHint;
+        public Vector3 ExhaustDirection;
+        public Color DustColor;
+        public float TargetRate;
+        public float Pressure;
+        public float QualityNorm;
+        public float NormalizedThrust;
+        public float GroundDistance;
+        public float Alignment;
+        public float ExhaustToBodyDown;
+        public float TerrainHeight;
+        public float CurrentThrust;
+        public float LightAlphaMultiplier;
+    }
+
     internal sealed partial class EngineGroundPuffEmitter
     {
         private readonly Part part;
@@ -51,8 +72,6 @@ namespace KerbalFX.ImpactPuffs
         private const float IgnitionPrimeDuration = 1.20f;
         private const float TerrainGateMultiplier = 1.35f;
         private const float TerrainGateOffset = 6f;
-        private const float MaxTargetRateSingle = 18000f;
-        private const float MaxTargetRateMulti = 7500f;
         private const float DebugEmitterInterval = 1.2f;
         private const float SuppressionLogInterval = 1.5f;
         private const float GroundDebugLogInterval = 0.35f;
@@ -116,29 +135,54 @@ namespace KerbalFX.ImpactPuffs
 
         public void Tick(Vessel vessel, float dt)
         {
+            EngineGroundPuffFrame frame;
+            if (TryBuildFrame(vessel, dt, out frame))
+                EmitFrame(vessel, frame, engineClusterCount, dt);
+        }
+
+        internal bool TryBuildFrame(Vessel vessel, float dt, out EngineGroundPuffFrame frame)
+        {
+            ImpactPuffFrameInput input;
+            if (!TryBuildFrameInput(vessel, dt, out frame, out input))
+                return false;
+
+            ApplyFrameOutput(ref frame, ImpactPuffFrameJobs.BuildManaged(input));
+            return true;
+        }
+
+        internal bool TryBuildFrameInput(
+            Vessel vessel,
+            float dt,
+            out EngineGroundPuffFrame frame,
+            out ImpactPuffFrameInput input)
+        {
+            frame = default(EngineGroundPuffFrame);
+            frame.Emitter = this;
+            input = default(ImpactPuffFrameInput);
+
             if (disposed)
             {
-                return;
+                return false;
             }
 
             if (part == null || engine == null)
             {
                 StopAllEmission(dt, false);
-                return;
+                return false;
             }
 
             ApplyRuntimeVisualProfile(false);
 
             if (ShouldSkipForVesselState(vessel, dt))
             {
-                return;
+                return false;
             }
 
             float currentThrust;
             float normalizedThrust;
             if (!TryResolveThrustInputs(vessel, dt, out currentThrust, out normalizedThrust))
             {
-                return;
+                return false;
             }
 
             RaycastHit groundHit;
@@ -158,68 +202,89 @@ namespace KerbalFX.ImpactPuffs
                 out alignment,
                 out distanceFactor))
             {
-                return;
+                return false;
             }
-
-            float qualityNorm;
-            float pressure;
-            float thrustPowerNorm;
-            float targetRate = ComputeTargetRate(
-                vessel,
-                currentThrust,
-                normalizedThrust,
-                distanceFactor,
-                out qualityNorm,
-                out pressure,
-                out thrustPowerNorm);
-
-            Vector3 stableNormal;
-            Vector3 outwardDirForCoreClamp;
-            Vector3 finalPosition = ComputeEmitterPosition(
-                vessel,
-                groundHit,
-                pressure,
-                out stableNormal,
-                out outwardDirForCoreClamp);
-
-            root.transform.position = finalPosition;
-
-            UpdateVolumetricFrame(vessel, finalPosition, stableNormal, outwardDirForCoreClamp, exhaustDirection, dt);
 
             UpdateSurfaceColor(vessel, groundHit, dt);
             UpdateLightAware(vessel, groundHit, dt);
-            targetRate *= GetLightAwareRateMultiplier();
             LogSurfaceSampleIfNeeded(vessel, dt);
             LogLightSampleIfNeeded(vessel, dt);
 
-            if (volumetricField != null)
-            {
-                volumetricField.Update(
-                    root.transform.position,
-                    root.transform.rotation,
-                    targetRate,
-                    pressure,
-                    qualityNorm,
-                    ImpactPuffsConfig.GetQualityScaleMultiplier(),
-                    GetCurrentDustColor(),
-                    lastCenteredness,
-                    engineClusterCount,
-                    GetLightAwareVisualAlphaMultiplier(),
-                    dt
-                );
-            }
+            frame.ClusterPosition = groundHit.point;
+            frame.ExhaustDirection = exhaustDirection;
+            frame.DustColor = GetCurrentDustColor();
+            frame.NormalizedThrust = normalizedThrust;
+            frame.GroundDistance = groundHit.distance;
+            frame.Alignment = alignment;
+            frame.ExhaustToBodyDown = exhaustToBodyDown;
+            frame.TerrainHeight = terrainHeight;
+            frame.CurrentThrust = currentThrust;
+            input = BuildFrameInput(
+                vessel,
+                groundHit,
+                exhaustDirection,
+                currentThrust,
+                normalizedThrust,
+                distanceFactor);
+            return true;
+        }
+
+        internal static void ApplyFrameOutput(ref EngineGroundPuffFrame frame, ImpactPuffFrameOutput output)
+        {
+            frame.Position = ImpactPuffFrameJobs.ToVector3(output.Position);
+            frame.StableNormal = ImpactPuffFrameJobs.ToVector3(output.StableNormal);
+            frame.OutwardHint = ImpactPuffFrameJobs.ToVector3(output.OutwardHint);
+            frame.TargetRate = output.TargetRate;
+            frame.Pressure = output.Pressure;
+            frame.QualityNorm = output.QualityNorm;
+            frame.LightAlphaMultiplier = output.LightAlphaMultiplier;
+        }
+
+        internal void EmitFrame(Vessel vessel, EngineGroundPuffFrame frame, int activeEngineCount, float dt)
+        {
+            if (disposed || volumetricField == null || root == null)
+                return;
+
+            root.transform.position = frame.Position;
+            UpdateVolumetricFrame(
+                vessel,
+                frame.Position,
+                frame.StableNormal,
+                frame.OutwardHint,
+                frame.ExhaustDirection,
+                dt);
+
+            volumetricField.Update(
+                root.transform.position,
+                root.transform.rotation,
+                frame.TargetRate,
+                frame.Pressure,
+                frame.QualityNorm,
+                ImpactPuffsConfig.GetQualityScaleMultiplier(),
+                frame.DustColor,
+                lastCenteredness,
+                activeEngineCount,
+                frame.LightAlphaMultiplier,
+                dt
+            );
 
             LogEmitterDebug(
                 vessel,
                 dt,
-                normalizedThrust,
-                groundHit.distance,
-                targetRate,
-                pressure,
-                alignment,
-                exhaustToBodyDown,
-                terrainHeight,
-                currentThrust);
+                frame.NormalizedThrust,
+                frame.GroundDistance,
+                frame.TargetRate,
+                frame.Pressure,
+                frame.Alignment,
+                frame.ExhaustToBodyDown,
+                frame.TerrainHeight,
+                frame.CurrentThrust,
+                activeEngineCount);
+        }
+
+        internal void FadeClusteredEmission(float dt)
+        {
+            StopAllEmission(dt, false);
         }
 
         private bool ShouldSkipForVesselState(Vessel vessel, float dt)
@@ -403,122 +468,60 @@ namespace KerbalFX.ImpactPuffs
             return true;
         }
 
-        private float ComputeTargetRate(
-            Vessel vessel,
-            float currentThrust,
-            float normalizedThrust,
-            float distanceFactor,
-            out float qualityNorm,
-            out float pressure,
-            out float thrustPowerNorm)
-        {
-            float quality = ModeQualityScale;
-            qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
-            float qualityRateScale = 1f + (Mathf.Pow(quality, 1.50f) - 1f) * 1.35f;
-
-            cachedBodyVisibility = ImpactPuffsRuntimeConfig.GetBodyVisibilityMultiplier(
-                vessel.mainBody != null ? vessel.mainBody.bodyName : string.Empty);
-
-            float thrustPowerScale = ComputeThrustPowerScale(currentThrust);
-            thrustPowerNorm = Mathf.Clamp01(
-                (thrustPowerScale - ImpactPuffsRuntimeConfig.ThrustPowerMinScale)
-                / Mathf.Max(0.01f, ImpactPuffsRuntimeConfig.ThrustPowerMaxScale - ImpactPuffsRuntimeConfig.ThrustPowerMinScale));
-
-            float lowThrustBoost = Mathf.Lerp(1.42f, 1.00f, normalizedThrust);
-            pressure = Mathf.Clamp01(
-                normalizedThrust
-                * lowThrustBoost
-                * Mathf.Lerp(0.52f, 1.95f, distanceFactor)
-                * Mathf.Lerp(0.78f, 1.46f, thrustPowerNorm));
-
-            float baseRate = (1320f + 14800f * pressure * pressure) * Mathf.Lerp(0.42f, 1.36f, distanceFactor);
-            float engineClusterScale = ComputeEngineClusterScale(engineClusterCount);
-            float modeDensityScale = 1.10f;
-            float qualityScale = ImpactPuffsConfig.GetQualityScaleMultiplier();
-
-            float targetRate = baseRate
-                * qualityRateScale
-                * thrustPowerScale
-                * engineClusterScale
-                * ImpactPuffsRuntimeConfig.EmissionMultiplier
-                * ImpactPuffsRuntimeConfig.SharedEmissionMultiplier
-                * cachedBodyVisibility
-                * modeDensityScale
-                * qualityScale;
-
-            targetRate *= 1.42f;
-            float rateCap = (engineClusterCount > 1 ? MaxTargetRateMulti : MaxTargetRateSingle) * qualityScale;
-            return Mathf.Clamp(targetRate, 0f, rateCap);
-        }
-
-
-        private Vector3 ComputeEmitterPosition(
+        private ImpactPuffFrameInput BuildFrameInput(
             Vessel vessel,
             RaycastHit groundHit,
-            float pressure,
-            out Vector3 stableNormal,
-            out Vector3 outwardDirForCoreClamp)
+            Vector3 exhaustDirection,
+            float currentThrust,
+            float normalizedThrust,
+            float distanceFactor)
         {
-            stableNormal = groundHit.normal.sqrMagnitude > 0.0001f ? groundHit.normal.normalized : Vector3.up;
-
-            float surfaceOffset = -0.05f;
-            Vector3 lateralOffset = Vector3.zero;
-            outwardDirForCoreClamp = Vector3.zero;
-
-            Vector3 centerPlane = Vector3.ProjectOnPlane(groundHit.point - vessel.CoM, stableNormal);
-            float centerPlaneMag = centerPlane.magnitude;
-            float underCenter = Mathf.Clamp01(1f - (centerPlaneMag / 0.85f));
-
-            Vector3 outwardDir = centerPlane;
-            if (outwardDir.sqrMagnitude < 0.0001f)
+            string bodyName = vessel != null && vessel.mainBody != null ? vessel.mainBody.bodyName : string.Empty;
+            cachedBodyVisibility = ImpactPuffsRuntimeConfig.GetBodyVisibilityMultiplier(bodyName);
+            KerbalFxLightAwareEntry lightEntry = GetLightAwareEntry();
+            KerbalFxLightSample lightSample = lightAware.Current;
+            Vector3 partRight = part != null && part.transform != null ? part.transform.right : Vector3.right;
+            Vector3 vesselVelocity = Vector3.zero;
+            if (vessel != null)
             {
-                outwardDir = Vector3.ProjectOnPlane((Vector3)vessel.srf_velocity, stableNormal);
-            }
-            if (outwardDir.sqrMagnitude < 0.0001f)
-            {
-                outwardDir = Vector3.ProjectOnPlane(part.transform.right, stableNormal);
+                vesselVelocity = new Vector3(
+                    (float)vessel.srf_velocity.x,
+                    (float)vessel.srf_velocity.y,
+                    (float)vessel.srf_velocity.z);
             }
 
-            if (outwardDir.sqrMagnitude > 0.0001f)
+            return new ImpactPuffFrameInput
             {
-                outwardDir.Normalize();
-                outwardDirForCoreClamp = outwardDir;
-                float outwardShift = Mathf.Lerp(0.08f, 0.42f, pressure) * Mathf.Lerp(0.30f, 0.92f, underCenter);
-                if (engineClusterCount > 1)
-                {
-                    float clusterNorm = Mathf.InverseLerp(2f, 6f, engineClusterCount);
-                    outwardShift *= Mathf.Lerp(1.10f, 1.50f, clusterNorm);
-                }
-                lateralOffset = outwardDir * outwardShift;
-            }
-
-            Vector3 finalPosition = groundHit.point + stableNormal * surfaceOffset + lateralOffset;
-            Vector3 finalPlane = Vector3.ProjectOnPlane(finalPosition - vessel.CoM, stableNormal);
-            float finalRadius = finalPlane.magnitude;
-            float minCoreRadius = Mathf.Lerp(0.55f, 1.95f, pressure);
-            if (engineClusterCount > 1)
-            {
-                float clusterNorm = Mathf.InverseLerp(2f, 6f, engineClusterCount);
-                minCoreRadius *= Mathf.Lerp(1.00f, 1.40f, clusterNorm);
-            }
-            else
-            {
-                minCoreRadius *= 0.30f;
-            }
-            if (finalRadius < minCoreRadius)
-            {
-                Vector3 pushDir = outwardDirForCoreClamp;
-                if (pushDir.sqrMagnitude < 0.0001f && finalPlane.sqrMagnitude > 0.0001f)
-                {
-                    pushDir = finalPlane.normalized;
-                }
-                if (pushDir.sqrMagnitude > 0.0001f)
-                {
-                    finalPosition += pushDir * (minCoreRadius - finalRadius);
-                }
-            }
-
-            return finalPosition;
+                GroundPoint = ImpactPuffFrameJobs.ToFloat3(groundHit.point),
+                GroundNormal = ImpactPuffFrameJobs.ToFloat3(groundHit.normal),
+                ExhaustDirection = ImpactPuffFrameJobs.ToFloat3(exhaustDirection),
+                VesselCoM = ImpactPuffFrameJobs.ToFloat3(vessel != null ? vessel.CoM : Vector3.zero),
+                VesselSurfaceVelocity = ImpactPuffFrameJobs.ToFloat3(vesselVelocity),
+                PartRight = ImpactPuffFrameJobs.ToFloat3(partRight),
+                CurrentThrust = currentThrust,
+                NormalizedThrust = normalizedThrust,
+                DistanceFactor = distanceFactor,
+                BodyVisibility = cachedBodyVisibility,
+                QualityScale = ImpactPuffsConfig.GetQualityScaleMultiplier(),
+                ImpactQualityScale = ModeQualityScale,
+                EmissionMultiplier = ImpactPuffsRuntimeConfig.EmissionMultiplier,
+                SharedEmissionMultiplier = ImpactPuffsRuntimeConfig.SharedEmissionMultiplier,
+                ThrustPowerReference = ImpactPuffsRuntimeConfig.ThrustPowerReference,
+                ThrustPowerExponent = ImpactPuffsRuntimeConfig.ThrustPowerExponent,
+                ThrustPowerMinScale = ImpactPuffsRuntimeConfig.ThrustPowerMinScale,
+                ThrustPowerMaxScale = ImpactPuffsRuntimeConfig.ThrustPowerMaxScale,
+                EngineCountExponent = ImpactPuffsRuntimeConfig.EngineCountExponent,
+                EngineCountMinScale = ImpactPuffsRuntimeConfig.EngineCountMinScale,
+                LightAwareStrength = LightAwareEngineStrength,
+                LightDarkScale = lightEntry.DarkScale,
+                LightBrightScale = lightEntry.BrightScale,
+                LightTwilightFloor = lightEntry.TwilightFloor,
+                LightMinPerceived = lightEntry.MinPerceived,
+                LightPerceivedBrightness = lightSample.PerceivedBrightness,
+                LightIsTwilight = lightSample.IsTwilight ? 1 : 0,
+                UseLightAware = ImpactPuffsConfig.UseLightAware ? 1 : 0,
+                EngineClusterCount = engineClusterCount
+            };
         }
 
         private void LogEmitterDebug(
@@ -531,7 +534,8 @@ namespace KerbalFX.ImpactPuffs
             float alignment,
             float exhaustToBodyDown,
             float terrainHeight,
-            float currentThrust)
+            float currentThrust,
+            int emittedClusterCount)
         {
             if (!ImpactPuffsConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel)
             {
@@ -561,7 +565,8 @@ namespace KerbalFX.ImpactPuffs
                 + " bodyAlign=" + exhaustToBodyDown.ToString("F2", CultureInfo.InvariantCulture)
                 + " terrainH=" + terrainHeight.ToString("F1", CultureInfo.InvariantCulture)
                 + " thrust=" + currentThrust.ToString("F0", CultureInfo.InvariantCulture)
-                + " cluster=" + engineClusterCount
+                + " emitCluster=" + emittedClusterCount
+                + " activeCluster=" + engineClusterCount
                 + " mode=volumetric"
             ));
         }
@@ -656,7 +661,7 @@ namespace KerbalFX.ImpactPuffs
             string hitDistance = hasHit ? hit.distance.ToString("F2", CultureInfo.InvariantCulture) : "n/a";
 
             ImpactPuffsLog.DebugLog(
-                "[KerbalFX] GroundProbe "
+                "GroundProbe "
                 + debugId
                 + " reason=" + reason
                 + " hit=" + hitName
@@ -963,21 +968,6 @@ namespace KerbalFX.ImpactPuffs
             return 0f;
         }
 
-        private static float ComputeThrustPowerScale(float currentThrust)
-        {
-            float safeThrust = Mathf.Max(0f, currentThrust);
-            float normalized = safeThrust / Mathf.Max(10f, ImpactPuffsRuntimeConfig.ThrustPowerReference);
-            float scaled = Mathf.Pow(Mathf.Max(0.001f, normalized), ImpactPuffsRuntimeConfig.ThrustPowerExponent);
-            return Mathf.Clamp(scaled, ImpactPuffsRuntimeConfig.ThrustPowerMinScale, ImpactPuffsRuntimeConfig.ThrustPowerMaxScale);
-        }
-
-        private static float ComputeEngineClusterScale(int clusterCount)
-        {
-            float count = Mathf.Max(1f, clusterCount);
-            float scale = 1f / Mathf.Pow(count, ImpactPuffsRuntimeConfig.EngineCountExponent);
-            return Mathf.Clamp(scale, ImpactPuffsRuntimeConfig.EngineCountMinScale, 1f);
-        }
-
         internal float GetLightAwareAlphaMultiplier()
         {
             if (!ImpactPuffsConfig.UseLightAware)
@@ -985,16 +975,6 @@ namespace KerbalFX.ImpactPuffs
             return lightAware.GetAlphaMultiplier(
                 GetLightAwareEntry(),
                 LightAwareEngineStrength);
-        }
-
-        internal float GetLightAwareVisualAlphaMultiplier()
-        {
-            return KerbalFxLightingCore.ApplySurfaceBoost(GetLightAwareAlphaMultiplier());
-        }
-
-        private float GetLightAwareRateMultiplier()
-        {
-            return KerbalFxLightingCore.ApplyRateCap(GetLightAwareVisualAlphaMultiplier());
         }
 
         private Color GetCurrentDustColor()

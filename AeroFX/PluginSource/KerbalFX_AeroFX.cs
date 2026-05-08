@@ -17,8 +17,6 @@ namespace KerbalFX.AeroFX
         public const string UiRibbonCapTip = "#LOC_KerbalFX_AeroFX_UI_RibbonCap_TT";
         public const string UiMachThresholdMode = "#LOC_KerbalFX_AeroFX_UI_MachThresholdMode";
         public const string UiMachThresholdModeTip = "#LOC_KerbalFX_AeroFX_UI_MachThresholdMode_TT";
-        public const string UiFastAnchorScan = "#LOC_KerbalFX_AeroFX_UI_FastAnchorScan";
-        public const string UiFastAnchorScanTip = "#LOC_KerbalFX_AeroFX_UI_FastAnchorScan_TT";
         public const string UiLightAware = "#LOC_KerbalFX_AeroFX_UI_LightAware";
         public const string UiLightAwareTip = "#LOC_KerbalFX_AeroFX_UI_LightAware_TT";
         public const string UiManeuverOnly = "#LOC_KerbalFX_AeroFX_UI_ManeuverOnly";
@@ -71,9 +69,6 @@ namespace KerbalFX.AeroFX
         )]
         public int machThresholdMode = 0;
 
-        [GameParameters.CustomParameterUI(AeroFxLoc.UiFastAnchorScan, toolTip = AeroFxLoc.UiFastAnchorScanTip)]
-        public bool fastAnchorScan = false;
-
         [GameParameters.CustomParameterUI(AeroFxLoc.UiLightAware, toolTip = AeroFxLoc.UiLightAwareTip)]
         public bool useLightAware = true;
 
@@ -96,7 +91,6 @@ namespace KerbalFX.AeroFX
         public static bool Enabled = true;
         public static int MaxRibbonCount = 4;
         public static int MachThresholdMode;
-        public static bool FastAnchorScan;
         public static bool UseLightAware = true;
         public static bool UseManeuverOnly;
         public static bool DebugLogging;
@@ -109,7 +103,6 @@ namespace KerbalFX.AeroFX
             bool newEnabled = true;
             int newMaxRibbonCount = 4;
             int newMachThresholdMode = 0;
-            bool newFastAnchorScan = false;
             bool newUseLightAware = true;
             bool newUseManeuverOnly = false;
             bool newDebug = false;
@@ -122,7 +115,6 @@ namespace KerbalFX.AeroFX
                     newEnabled = p.enableAeroFx;
                     newMaxRibbonCount = Mathf.Clamp(p.maxRibbonCount, 2, 6);
                     newMachThresholdMode = Mathf.Clamp(p.machThresholdMode, 0, 3);
-                    newFastAnchorScan = p.fastAnchorScan;
                     newUseLightAware = p.useLightAware;
                     newUseManeuverOnly = p.maneuverOnly;
                     newDebug = p.debugLogging;
@@ -133,7 +125,6 @@ namespace KerbalFX.AeroFX
                 || newEnabled != Enabled
                 || newMaxRibbonCount != MaxRibbonCount
                 || newMachThresholdMode != MachThresholdMode
-                || newFastAnchorScan != FastAnchorScan
                 || newUseLightAware != UseLightAware
                 || newUseManeuverOnly != UseManeuverOnly
                 || newDebug != DebugLogging;
@@ -141,7 +132,6 @@ namespace KerbalFX.AeroFX
             Enabled = newEnabled;
             MaxRibbonCount = newMaxRibbonCount;
             MachThresholdMode = newMachThresholdMode;
-            FastAnchorScan = newFastAnchorScan;
             UseLightAware = newUseLightAware;
             UseManeuverOnly = newUseManeuverOnly;
             DebugLogging = newDebug;
@@ -155,7 +145,6 @@ namespace KerbalFX.AeroFX
                     Enabled,
                     MaxRibbonCount,
                     MachThresholdMode,
-                    FastAnchorScan,
                     UseLightAware,
                     UseManeuverOnly,
                     DebugLogging));
@@ -422,6 +411,16 @@ namespace KerbalFX.AeroFX
     {
         protected override bool IsModuleEnabled { get { return AeroFxConfig.Enabled; } }
         protected override bool IsDebugLogging { get { return AeroFxConfig.DebugLogging; } }
+        protected override int CurrentConfigRevision
+        {
+            get
+            {
+                unchecked
+                {
+                    return AeroFxConfig.Revision * 397 ^ AeroFxRuntimeConfig.Revision;
+                }
+            }
+        }
 
         protected override void RefreshSettings()
         {

@@ -37,6 +37,7 @@ namespace KerbalFX.RoverDust
         private float wheelVisualScaleDebug = 1f;
         private float wheelVisualFootprintScale = 1f;
         private float wheelVisualFootprintRadius;
+        private float bodyVisibility = 1f;
         private float continuityDistanceRemainder;
         private Vector3 lastContinuityPoint;
         private bool advancedQualityFeatures;
@@ -76,11 +77,12 @@ namespace KerbalFX.RoverDust
         private static float cachedGradientQualityNorm = -1f;
         private static float cachedSizeCurveQuality = -1f;
 
-        public WheelDustEmitter(Part part, WheelCollider[] wheels, float vesselEmitterBudgetScale, int emitterIndex)
+        public WheelDustEmitter(Part part, WheelCollider[] wheels, float vesselEmitterBudgetScale, int emitterIndex, float bodyVisibility)
         {
             this.part = part;
             this.wheels = wheels ?? new WheelCollider[0];
             this.vesselEmitterBudgetScale = Mathf.Clamp(vesselEmitterBudgetScale, 0.40f, 1f);
+            this.bodyVisibility = Mathf.Max(0f, bodyVisibility);
             wheelGroupCount = GetActiveWheelColliderCount(this.wheels);
             debugId = BuildDebugId(part, emitterIndex);
 
@@ -94,11 +96,12 @@ namespace KerbalFX.RoverDust
             ApplyRuntimeVisualProfile(true);
         }
 
-        public void Tick(Vessel vessel, float dt)
+        public void Tick(Vessel vessel, float dt, float bodyVisibility)
         {
             if (disposed || part == null || wheels == null || wheels.Length == 0)
                 return;
 
+            this.bodyVisibility = Mathf.Max(0f, bodyVisibility);
             if (appliedProfileRevision.NeedsApply(RoverDustConfig.Revision, RoverDustRuntimeConfig.Revision))
             {
                 ApplyRuntimeVisualProfile(false);
@@ -146,7 +149,6 @@ namespace KerbalFX.RoverDust
 
             float quality = RoverDustConfig.QualityPercent / 100f;
             float qualityRateScale = 1f + (Mathf.Pow(quality, 1.60f) - 1f) * 0.75f;
-            float bodyVisibility = GetBodyDustVisibilityMultiplier(vessel);
             float baseRate = (BaseRateMin + BaseRateRange * speedFactor) * (0.45f + 0.55f * slipBoost) * RoverDustRuntimeConfig.EmissionMultiplier;
             float targetRate = baseRate * qualityRateScale * wheelDustRateScale * bodyVisibility
                 * GetWheelClusterRateScale() * GetWheelVisualRateScale() * vesselEmitterBudgetScale;
@@ -272,7 +274,6 @@ namespace KerbalFX.RoverDust
             float qualityNorm = Mathf.InverseLerp(0.25f, 2.0f, quality);
             float qualityParticleScale = 1f + (Mathf.Pow(quality, 1.70f) - 1f) * 0.75f;
             float qualitySizeScale = Mathf.Lerp(0.76f, 1.36f, qualityNorm);
-            float bodyVisibility = GetBodyDustVisibilityMultiplier(part != null ? part.vessel : null);
             float bodyBoostNorm = Mathf.Clamp01((bodyVisibility - 1f) / 0.5f);
             float bodyParticleScale = Mathf.Lerp(1f, 1.28f, bodyBoostNorm);
             float bodySizeScale = Mathf.Lerp(1f, 1.16f, bodyBoostNorm);
@@ -506,7 +507,6 @@ namespace KerbalFX.RoverDust
         private float ComputeStartAlpha()
         {
             float alpha = BaseDustAlpha;
-            float bodyVisibility = GetBodyDustVisibilityMultiplier(part != null ? part.vessel : null);
             float bodyBoostNorm = Mathf.Clamp01((bodyVisibility - 1f) / 0.5f);
             alpha *= Mathf.Lerp(1f, 1.16f, bodyBoostNorm);
             alpha *= GetLightAwareVisualAlphaMultiplier();
@@ -966,13 +966,6 @@ namespace KerbalFX.RoverDust
             }
 
             return Mathf.Clamp(radius, 0.05f, 2.4f);
-        }
-
-        private static float GetBodyDustVisibilityMultiplier(Vessel vessel)
-        {
-            if (vessel == null || vessel.mainBody == null || string.IsNullOrEmpty(vessel.mainBody.bodyName))
-                return 1f;
-            return RoverDustRuntimeConfig.GetBodyVisibilityMultiplier(vessel.mainBody.bodyName);
         }
     }
 }

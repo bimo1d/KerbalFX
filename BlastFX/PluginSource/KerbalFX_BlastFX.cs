@@ -26,6 +26,27 @@ namespace KerbalFX.BlastFX
         public const string LogVacuumDebris = "#LOC_KerbalFX_BlastFX_Log_VacuumDebris";
         public const string LogPoolPrewarm = "#LOC_KerbalFX_BlastFX_Log_PoolPrewarm";
         public const string LogPoolGrow = "#LOC_KerbalFX_BlastFX_Log_PoolGrow";
+        public const string LogHarmonyPatchFailed = "#LOC_KerbalFX_BlastFX_Log_HarmonyPatchFailed";
+        public const string LogVacuumAssetBundleFailed = "#LOC_KerbalFX_BlastFX_Log_VacuumAssetBundleFailed";
+        public const string LogVacuumPrefabMissing = "#LOC_KerbalFX_BlastFX_Log_VacuumPrefabMissing";
+        public const string LogVacuumPrefabLoaded = "#LOC_KerbalFX_BlastFX_Log_VacuumPrefabLoaded";
+        public const string LogVacuumPreload = "#LOC_KerbalFX_BlastFX_Log_VacuumPreload";
+        public const string LogVacuumPrewarmSlots = "#LOC_KerbalFX_BlastFX_Log_VacuumPrewarmSlots";
+        public const string LogVacuumWarmupComplete = "#LOC_KerbalFX_BlastFX_Log_VacuumWarmupComplete";
+        public const string LogVacuumSkipFuelGate = "#LOC_KerbalFX_BlastFX_Log_VacuumSkipFuelGate";
+        public const string LogVacuumSkipNotVacuum = "#LOC_KerbalFX_BlastFX_Log_VacuumSkipNotVacuum";
+        public const string LogVacuumSkipLod = "#LOC_KerbalFX_BlastFX_Log_VacuumSkipLod";
+        public const string LogVacuumQueued = "#LOC_KerbalFX_BlastFX_Log_VacuumQueued";
+        public const string LogVacuumRateLimitDrop = "#LOC_KerbalFX_BlastFX_Log_VacuumRateLimitDrop";
+        public const string LogVacuumBatch = "#LOC_KerbalFX_BlastFX_Log_VacuumBatch";
+        public const string LogVacuumSpawn = "#LOC_KerbalFX_BlastFX_Log_VacuumSpawn";
+        public const string LogVacuumBuildSlot = "#LOC_KerbalFX_BlastFX_Log_VacuumBuildSlot";
+        public const string LogFxHeartbeat = "#LOC_KerbalFX_BlastFX_Log_FxHeartbeat";
+        public const string LogVacuumDebrisProbe = "#LOC_KerbalFX_BlastFX_Log_VacuumDebrisProbe";
+        public const string LogVacuumDebrisProbeLate = "#LOC_KerbalFX_BlastFX_Log_VacuumDebrisProbeLate";
+        public const string LogVacuumAnchorRetarget = "#LOC_KerbalFX_BlastFX_Log_VacuumAnchorRetarget";
+        public const string LogVacuumAnchorProbeSpawn = "#LOC_KerbalFX_BlastFX_Log_VacuumAnchorProbeSpawn";
+        public const string LogVacuumAnchorProbeStep = "#LOC_KerbalFX_BlastFX_Log_VacuumAnchorProbeStep";
     }
 
     public class BlastFxParameters : GameParameters.CustomParameterNode
@@ -58,7 +79,7 @@ namespace KerbalFX.BlastFX
 
         public override int SectionOrder
         {
-            get { return 5; }
+            get { return 6; }
         }
 
         public override bool HasPresets
@@ -105,6 +126,21 @@ namespace KerbalFX.BlastFX
         public static bool EnableModule = true;
         public static string TargetPrefix = "TS-";
         public static string[] TargetTokens = new[] { "TS-" };
+        public static bool EnableVacuumExplosions = false;
+        public static string VacuumExplosionBundle = "kcseffects";
+        public static string VacuumExplosionPrefab = "Explosion";
+        public static float VacuumExplosionReturnDelay = 15.0f;
+        public static bool VacuumExplosionPreload = true;
+        public static int VacuumExplosionPrewarmSlots = 2;
+        public static int VacuumExplosionRateLimit = 3;
+        public static float VacuumExplosionLimitRadius = 3.0f;
+        public static float VacuumExplosionLimitTime = 0.9f;
+        public static float VacuumExplosionMergeMaxSpeedDiff = 160f;
+        public static bool VacuumExplosionWarmupDraw = true;
+        public static bool VacuumExplosionRequireEligibleFuelPart = true;
+        public static float VacuumExplosionMinFuelReserve = 0.01f;
+        public static bool UseBundleVacuumDebrisMaterial = true;
+        public static string VacuumDebrisMaterialTransform = "Debris";
         public const float TriggerCooldown = 0.35f;
         public const float BaseRadius = 0.20f;
         public const float RadiusFromPart = 0.95f;
@@ -146,6 +182,21 @@ namespace KerbalFX.BlastFX
             DespawnDetachedRingVessel = true;
             HideDetachedRingVisualImmediately = true;
             SmartHiddenRingCleanup = true;
+            EnableVacuumExplosions = true;
+            VacuumExplosionBundle = "kcseffects";
+            VacuumExplosionPrefab = "Explosion";
+            VacuumExplosionReturnDelay = 15.0f;
+            VacuumExplosionPreload = true;
+            VacuumExplosionPrewarmSlots = 2;
+            VacuumExplosionRateLimit = 3;
+            VacuumExplosionLimitRadius = 3.0f;
+            VacuumExplosionLimitTime = 0.9f;
+            VacuumExplosionMergeMaxSpeedDiff = 160f;
+            VacuumExplosionWarmupDraw = true;
+            VacuumExplosionRequireEligibleFuelPart = true;
+            VacuumExplosionMinFuelReserve = 0.01f;
+            UseBundleVacuumDebrisMaterial = true;
+            VacuumDebrisMaterialTransform = "Debris";
         }
 
         private static void ReloadFromGameDb()
@@ -201,6 +252,25 @@ namespace KerbalFX.BlastFX
             DespawnDetachedRingVessel = KerbalFxUtil.ReadBool(node, "DespawnDetachedRingVessel", DespawnDetachedRingVessel);
             HideDetachedRingVisualImmediately = KerbalFxUtil.ReadBool(node, "HideDetachedRingVisualImmediately", HideDetachedRingVisualImmediately);
             SmartHiddenRingCleanup = KerbalFxUtil.ReadBool(node, "SmartHiddenRingCleanup", SmartHiddenRingCleanup);
+            EnableVacuumExplosions = KerbalFxUtil.ReadBool(node, "EnableVacuumExplosions", EnableVacuumExplosions);
+            VacuumExplosionBundle = KerbalFxUtil.ReadString(node, "VacuumExplosionBundle", VacuumExplosionBundle);
+            VacuumExplosionPrefab = KerbalFxUtil.ReadString(node, "VacuumExplosionPrefab", VacuumExplosionPrefab);
+            VacuumExplosionReturnDelay = KerbalFxUtil.ReadFloat(node, "VacuumExplosionReturnDelay", VacuumExplosionReturnDelay, 1.0f, 60.0f);
+            VacuumExplosionPreload = KerbalFxUtil.ReadBool(node, "VacuumExplosionPreload", VacuumExplosionPreload);
+            VacuumExplosionPrewarmSlots = Mathf.Clamp(
+                Mathf.RoundToInt(KerbalFxUtil.ReadFloat(node, "VacuumExplosionPrewarmSlots", VacuumExplosionPrewarmSlots, 0.0f, 12.0f)),
+                0, 12);
+            VacuumExplosionRateLimit = Mathf.Clamp(
+                Mathf.RoundToInt(KerbalFxUtil.ReadFloat(node, "VacuumExplosionRateLimit", VacuumExplosionRateLimit, 0.0f, 20.0f)),
+                0, 20);
+            VacuumExplosionLimitRadius = KerbalFxUtil.ReadFloat(node, "VacuumExplosionLimitRadius", VacuumExplosionLimitRadius, 0.5f, 50.0f);
+            VacuumExplosionLimitTime = KerbalFxUtil.ReadFloat(node, "VacuumExplosionLimitTime", VacuumExplosionLimitTime, 0.1f, 5.0f);
+            VacuumExplosionMergeMaxSpeedDiff = KerbalFxUtil.ReadFloat(node, "VacuumExplosionMergeMaxSpeedDiff", VacuumExplosionMergeMaxSpeedDiff, 0.0f, 1000.0f);
+            VacuumExplosionWarmupDraw = KerbalFxUtil.ReadBool(node, "VacuumExplosionWarmupDraw", VacuumExplosionWarmupDraw);
+            VacuumExplosionRequireEligibleFuelPart = KerbalFxUtil.ReadBool(node, "VacuumExplosionRequireEligibleFuelPart", VacuumExplosionRequireEligibleFuelPart);
+            VacuumExplosionMinFuelReserve = KerbalFxUtil.ReadFloat(node, "VacuumExplosionMinFuelReserve", VacuumExplosionMinFuelReserve, 0f, 10000f);
+            UseBundleVacuumDebrisMaterial = KerbalFxUtil.ReadBool(node, "UseBundleVacuumDebrisMaterial", UseBundleVacuumDebrisMaterial);
+            VacuumDebrisMaterialTransform = KerbalFxUtil.ReadString(node, "VacuumDebrisMaterialTransform", VacuumDebrisMaterialTransform);
         }
 
         private static string ConfigPath()

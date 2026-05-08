@@ -3,6 +3,8 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using KSP.Localization;
+using KerbalFX;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace KerbalFX.BlastFX
@@ -69,8 +71,18 @@ namespace KerbalFX.BlastFX
             public ParticleSystem Sparks;
             public ParticleSystem Chunks;
             public ParticleSystem Smoke;
+            public Transform AnchorTransform;
+            public bool VacuumDebrisFromBundledPrefab;
             public bool Busy;
             public float ReturnTime;
+        }
+
+        private sealed class TargetCacheEntry
+        {
+            public int PartCount;
+            public uint PartSignature;
+            public int ConfigRevision;
+            public Part[] Targets;
         }
 
         private static readonly Dictionary<string, bool> decouplerModuleCache =
@@ -88,9 +100,14 @@ namespace KerbalFX.BlastFX
         private readonly Dictionary<uint, State> byPart = new Dictionary<uint, State>(128);
         private readonly Dictionary<uint, double> suppressedFxUntilByPart = new Dictionary<uint, double>(64);
         private readonly Dictionary<uint, HiddenRingState> hiddenRings = new Dictionary<uint, HiddenRingState>(32);
+        private readonly Dictionary<Guid, TargetCacheEntry> trackedTargetCache =
+            new Dictionary<Guid, TargetCacheEntry>(32);
         private readonly List<Part> trackedTargets = new List<Part>(256);
+        private readonly List<Part> targetBuildScratch = new List<Part>(32);
         private readonly HashSet<uint> seenIds = new HashSet<uint>(128);
+        private readonly HashSet<Guid> seenVesselIds = new HashSet<Guid>();
         private readonly List<uint> staleIds = new List<uint>(128);
+        private readonly List<Guid> staleVesselIds = new List<Guid>(32);
         private readonly List<uint> hiddenRingRemoveIds = new List<uint>(32);
 
         // Pool: indexed by (int)FxSizeClass
@@ -107,15 +124,22 @@ namespace KerbalFX.BlastFX
         private float boostedScanUntil;
         private int activePoolSlotCount;
         private float nextPoolReturnAt = float.MaxValue;
+        private int poolGrowFrame = -1;
+        private int poolGrowCountThisFrame;
         private bool poolPrewarmStarted;
         private bool poolPrewarmComplete;
-
+        internal bool kcsVacuumExplosionsEnabled;
+        private int kcsVacuumExplosionsCfgRevision = -1;
+        private int trackedTargetCacheRevision = -1;
         private const float ScanDt = 2.50f;
         private const float BoostedScanDt = 0.15f;
+        private const float EmptyTargetScanDt = 5.00f;
         private const float TargetRefreshDt = 3.00f;
         private const float TargetRefreshBoostedDt = 0.25f;
+        private const float EmptyTargetRefreshDt = 5.00f;
         private const float CfgDt = 0.5f;
-        private const float HotReloadDt = 2.0f;
+        private const float HotReloadDt = 5.0f;
+        private const int MaxPoolGrowPerFrame = 1;
         private const double HiddenRingMinKeepSeconds = 6.0d;
         private const double JettisonNeighborCacheSeconds = 5.0d;
         private const double JettisonNeighborProbeDt = 0.75d;
@@ -123,11 +147,23 @@ namespace KerbalFX.BlastFX
         private const float PyroReturnDelay = 3.2f;
         private const float PuffReturnDelay = 2.2f;
         private const float DockReturnDelay = 3.4f;
-        private const float VacuumDebrisReturnDelay = 18.5f;
+        private const float VacuumDebrisReturnDelay = 10.5f;
+        private const float VacuumDebrisBundleScale = 0.25f;
+        private static readonly float[] VacuumDebrisBundleSizeScales = { 1.59f, 1.70f, 2.18f, 2.50f };
+        private const float VacuumDebrisBundleCountScale = 0.7f;
+        private const float VacuumDebrisSoftDecouplerCountScale = 0.5f;
         private const int PrewarmPyroSlotsPerSize = 3;
         private const int PrewarmPuffSlotsPerSize = 2;
         private const int PrewarmDockSlotsPerSize = 1;
+        private const int PrewarmVacuumSlotsPerSize = 1;
         private const double VacuumDensityThreshold = 0.001d;
+        private static readonly Part[] EmptyTargetParts = new Part[0];
+        private static readonly ProfilerMarker TargetRefreshMarker =
+            new ProfilerMarker("KerbalFX.BlastFX.RefreshTrackedTargets");
+        private static readonly ProfilerMarker ScanMarker =
+            new ProfilerMarker("KerbalFX.BlastFX.Scan");
+
+        private static BlastFxController instance;
 
         // LOD distance thresholds (squared)
         private const float LodFullDistSqr    = 100f  * 100f;
@@ -137,8 +173,14 @@ namespace KerbalFX.BlastFX
 
         private void Start()
         {
+            instance = this;
             BlastFxConfig.Refresh();
             BlastFxRuntimeConfig.Refresh();
+            kcsVacuumExplosionsEnabled = BlastFxRuntimeConfig.EnableVacuumExplosions;
+            kcsVacuumExplosionsCfgRevision = BlastFxRuntimeConfig.Revision;
+
+            BlastFxHarmonyBootstrap.ApplyPatchesOnce();
+
             for (int i = 0; i < SizeClassCount; i++)
             {
                 pyroSlots[i] = new List<PoolSlot>(3);
@@ -146,6 +188,7 @@ namespace KerbalFX.BlastFX
                 dockSlots[i] = new List<PoolSlot>(2);
                 vacuumSlots[i] = new List<PoolSlot>(2);
             }
+            KcsVacuumExplosionInit();
             SubscribeEvents();
             StartPoolPrewarmIfNeeded();
             RequestBoostedScan(4.0f);
@@ -153,12 +196,16 @@ namespace KerbalFX.BlastFX
 
         private void OnDestroy()
         {
+            if (instance == this)
+                instance = null;
             UnsubscribeEvents();
             StopAllCoroutines();
             DestroyPools();
+            KcsVacuumExplosionDestroy();
             byPart.Clear();
             suppressedFxUntilByPart.Clear();
             trackedTargets.Clear();
+            trackedTargetCache.Clear();
             hiddenRings.Clear();
         }
 
@@ -189,6 +236,7 @@ namespace KerbalFX.BlastFX
         private void OnPartDie(Part part)
         {
             TryTriggerFromEvent(part, "onPartDie");
+            TryQueueKcsVacuumExplosion(part);
             RequestBoostedScan(2.5f);
         }
 
@@ -201,6 +249,7 @@ namespace KerbalFX.BlastFX
         private void OnPartDecoupleNewVesselComplete(Vessel fromVessel, Vessel toVessel)
         {
             RequestBoostedScan(3.0f);
+            RetargetRecentVacuumDebrisAnchors(fromVessel, toVessel);
             if (!BlastFxConfig.Enabled) return;
             if (!BlastFxRuntimeConfig.EnableModule) return;
             if (!BlastFxRuntimeConfig.DespawnDetachedRingVessel) return;
@@ -236,9 +285,12 @@ namespace KerbalFX.BlastFX
             if (ShouldSkipDespawnToPreserveShroud(ringPart))
             {
                 TrackHiddenRing(ringPart);
-                BlastFxLog.DebugLog(Localizer.Format(
-                    BlastFxLoc.LogSkipDespawnPreserveShroud,
-                    ringPart.partInfo != null ? ringPart.partInfo.name : "unknown"));
+                if (BlastFxConfig.DebugLogging)
+                {
+                    BlastFxLog.DebugLog(Localizer.Format(
+                        BlastFxLoc.LogSkipDespawnPreserveShroud,
+                        ringPart.partInfo != null ? ringPart.partInfo.name : "unknown"));
+                }
                 return;
             }
 
@@ -371,11 +423,14 @@ namespace KerbalFX.BlastFX
             state.SnapshotLayer = part.gameObject != null ? part.gameObject.layer : 0;
             state.SnapshotInVacuum = IsPartInVacuumFreefall(part);
 
-            SpawnFx(fxKind, spawnPos, axis, state.SnapshotLayer,
+            SpawnFx(fxKind, spawnPos, part, axis, state.SnapshotLayer,
                 state.SizeClass, state.SnapshotInVacuum);
 
-            string partName = part.partInfo != null ? part.partInfo.name : "unknown";
-            BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerVia, source, partName));
+            if (BlastFxConfig.DebugLogging)
+            {
+                string partName = part.partInfo != null ? part.partInfo.name : "unknown";
+                BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerVia, source, partName));
+            }
             return true;
         }
 
@@ -384,16 +439,20 @@ namespace KerbalFX.BlastFX
         {
             if (part == null || state == null || !state.HasSnapshot) return;
 
-            SpawnFx(fxKind, state.SnapshotPosition, axis, state.SnapshotLayer,
-                state.SizeClass, state.SnapshotInVacuum);
+            SpawnFx(fxKind, state.SnapshotPosition, part, axis,
+                state.SnapshotLayer, state.SizeClass, state.SnapshotInVacuum);
 
-            string partName = part.partInfo != null ? part.partInfo.name : "unknown";
-            BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerViaSnapshot, source, partName));
+            if (BlastFxConfig.DebugLogging)
+            {
+                string partName = part.partInfo != null ? part.partInfo.name : "unknown";
+                BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerViaSnapshot, source, partName));
+            }
         }
 
         private void Update()
         {
             float dt = Time.deltaTime;
+            float now = Time.time;
 
             cfgTimer -= dt;
             if (cfgTimer <= 0f)
@@ -410,6 +469,14 @@ namespace KerbalFX.BlastFX
                 BlastFxRuntimeConfig.TryHotReload();
             }
 
+            if (kcsVacuumExplosionsCfgRevision != BlastFxRuntimeConfig.Revision)
+            {
+                kcsVacuumExplosionsCfgRevision = BlastFxRuntimeConfig.Revision;
+                kcsVacuumExplosionsEnabled = BlastFxRuntimeConfig.EnableVacuumExplosions;
+                if (!kcsVacuumExplosionsEnabled)
+                    StopKcsVacuumExplosions();
+            }
+
             hiddenRingCleanupTimer -= dt;
             if (hiddenRingCleanupTimer <= 0f)
             {
@@ -418,72 +485,187 @@ namespace KerbalFX.BlastFX
             }
 
             ReturnExpiredSlots();
+            bool moduleEnabled = BlastFxConfig.Enabled && BlastFxRuntimeConfig.EnableModule;
+            if (!moduleEnabled)
+            {
+                StopKcsVacuumExplosions();
+                UpdateDebugTelemetry(dt);
+                return;
+            }
 
-            if (!BlastFxConfig.Enabled || !BlastFxRuntimeConfig.EnableModule) return;
-
-            RefreshTrackedTargetsIfNeeded(dt);
+            UpdateKcsVacuumExplosions(dt);
+            UpdateDebugTelemetry(dt);
+            RefreshTrackedTargetsIfNeeded(dt, now);
 
             scanTimer -= dt;
             if (scanTimer > 0f) return;
-            float scanInterval = Time.time < boostedScanUntil ? BoostedScanDt : ScanDt;
+            float scanInterval = now < boostedScanUntil
+                ? BoostedScanDt
+                : (trackedTargets.Count == 0 ? EmptyTargetScanDt : ScanDt);
             scanTimer = scanInterval;
             Scan();
         }
 
-        private void Scan()
+        internal static bool TrySuppressStockFxMongerExplode(Part source)
         {
-            CleanupSuppression();
+            if (!HighLogic.LoadedSceneIsFlight || source == null || source.partInfo == null)
+                return false;
 
-            if (trackedTargets.Count == 0)
-            {
-                byPart.Clear();
-                return;
-            }
+            BlastFxController host = instance;
+            if (host == null)
+                return false;
 
-            seenIds.Clear();
-            double scanUt = Planetarium.GetUniversalTime();
+            if (!BlastFxConfig.Enabled || !BlastFxRuntimeConfig.EnableModule || !host.kcsVacuumExplosionsEnabled)
+                return false;
 
-            for (int i = 0; i < trackedTargets.Count; i++)
-            {
-                ProcessTargetPartFromScan(trackedTargets[i], scanUt);
-            }
-
-            PruneMissingPartStates();
+            return host.TryQueueKcsVacuumExplosion(source, true);
         }
 
-        private void RefreshTrackedTargetsIfNeeded(float dt)
+        private void Scan()
+        {
+            ScanMarker.Begin();
+            try
+            {
+                CleanupSuppression();
+
+                if (trackedTargets.Count == 0)
+                {
+                    byPart.Clear();
+                    return;
+                }
+
+                seenIds.Clear();
+                double scanUt = Planetarium.GetUniversalTime();
+
+                for (int i = 0; i < trackedTargets.Count; i++)
+                {
+                    ProcessTargetPartFromScan(trackedTargets[i], scanUt);
+                }
+
+                PruneMissingPartStates();
+            }
+            finally
+            {
+                ScanMarker.End();
+            }
+        }
+
+        private void RefreshTrackedTargetsIfNeeded(float dt, float now)
         {
             targetRefreshTimer -= dt;
             if (targetRefreshTimer > 0f) return;
 
-            targetRefreshTimer = Time.time < boostedScanUntil
-                ? TargetRefreshBoostedDt
-                : TargetRefreshDt;
+            TargetRefreshMarker.Begin();
+            try
+            {
+                RefreshTrackedTargetsNow();
+            }
+            finally
+            {
+                TargetRefreshMarker.End();
+            }
 
+            targetRefreshTimer = now < boostedScanUntil
+                ? TargetRefreshBoostedDt
+                : (trackedTargets.Count == 0 ? EmptyTargetRefreshDt : TargetRefreshDt);
+        }
+
+        private void RefreshTrackedTargetsNow()
+        {
             trackedTargets.Clear();
+            if (trackedTargetCacheRevision != BlastFxRuntimeConfig.Revision)
+            {
+                trackedTargetCacheRevision = BlastFxRuntimeConfig.Revision;
+                trackedTargetCache.Clear();
+            }
+
             List<Vessel> loaded = FlightGlobals.VesselsLoaded;
             if (loaded == null || loaded.Count == 0) return;
 
+            seenVesselIds.Clear();
             for (int v = 0; v < loaded.Count; v++)
             {
                 Vessel vessel = loaded[v];
                 if (vessel == null || !vessel.loaded || vessel.packed || vessel.parts == null)
                     continue;
 
-                for (int i = 0; i < vessel.parts.Count; i++)
-                {
-                    Part part = vessel.parts[i];
-                    if (IsPyroTarget(part))
-                    {
-                        trackedTargets.Add(part);
-                    }
-                }
+                seenVesselIds.Add(vessel.id);
+                AppendTrackedTargetsForVessel(vessel);
             }
+
+            PruneTrackedTargetCache();
+        }
+
+        private void AppendTrackedTargetsForVessel(Vessel vessel)
+        {
+            int partCount = vessel.parts != null ? vessel.parts.Count : 0;
+            uint partSignature = KerbalFxUtil.ComputeVesselPartSignature(vessel);
+            int configRevision = BlastFxRuntimeConfig.Revision;
+
+            TargetCacheEntry cached;
+            if (trackedTargetCache.TryGetValue(vessel.id, out cached)
+                && cached.PartCount == partCount
+                && cached.PartSignature == partSignature
+                && cached.ConfigRevision == configRevision)
+            {
+                AppendCachedTargets(cached.Targets);
+                return;
+            }
+
+            targetBuildScratch.Clear();
+            for (int i = 0; i < vessel.parts.Count; i++)
+            {
+                Part part = vessel.parts[i];
+                if (IsPyroTarget(part))
+                    targetBuildScratch.Add(part);
+            }
+
+            Part[] targets = targetBuildScratch.Count > 0
+                ? targetBuildScratch.ToArray()
+                : EmptyTargetParts;
+
+            trackedTargetCache[vessel.id] = new TargetCacheEntry
+            {
+                PartCount = partCount,
+                PartSignature = partSignature,
+                ConfigRevision = configRevision,
+                Targets = targets
+            };
+            AppendCachedTargets(targets);
+            targetBuildScratch.Clear();
+        }
+
+        private void AppendCachedTargets(Part[] targets)
+        {
+            if (targets == null || targets.Length == 0)
+                return;
+
+            for (int i = 0; i < targets.Length; i++)
+            {
+                Part part = targets[i];
+                if (part != null)
+                    trackedTargets.Add(part);
+            }
+        }
+
+        private void PruneTrackedTargetCache()
+        {
+            staleVesselIds.Clear();
+            var e = trackedTargetCache.GetEnumerator();
+            while (e.MoveNext())
+            {
+                if (!seenVesselIds.Contains(e.Current.Key))
+                    staleVesselIds.Add(e.Current.Key);
+            }
+            e.Dispose();
+
+            for (int i = 0; i < staleVesselIds.Count; i++)
+                trackedTargetCache.Remove(staleVesselIds[i]);
         }
 
         private void ProcessTargetPartFromScan(Part part, double scanUt)
         {
-            if (!IsPyroTarget(part)) return;
+            if (part == null || part.flightID == 0u) return;
 
             seenIds.Add(part.flightID);
             State state = GetOrCreateState(part.flightID);
@@ -546,12 +728,16 @@ namespace KerbalFX.BlastFX
             if (scanUt - state.LastFxUt < BlastFxRuntimeConfig.TriggerCooldown) return;
 
             state.LastFxUt = scanUt;
-            SpawnFx(FxKind.PyroRing, part.transform.position, axis,
+
+            SpawnFx(FxKind.PyroRing, part.transform.position, part, axis,
                 part.gameObject != null ? part.gameObject.layer : 0,
                 state.SizeClass, state.SnapshotInVacuum);
 
-            string partName = part.partInfo != null ? part.partInfo.name : "unknown";
-            BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerViaScan, partName));
+            if (BlastFxConfig.DebugLogging)
+            {
+                string partName = part.partInfo != null ? part.partInfo.name : "unknown";
+                BlastFxLog.DebugLog(Localizer.Format(BlastFxLoc.LogTriggerViaScan, partName));
+            }
         }
 
         private void PruneMissingPartStates()
@@ -671,6 +857,62 @@ namespace KerbalFX.BlastFX
             return true;
         }
 
+        private static double VacuumExplosionMaxCapacity(Part part, string resourceName)
+        {
+            if (part == null || part.Resources == null
+                || string.IsNullOrEmpty(resourceName))
+            {
+                return 0.0;
+            }
+
+            for (int i = 0; i < part.Resources.Count; i++)
+            {
+                PartResource r = part.Resources[i];
+                if (r == null || r.info == null) continue;
+
+                if (string.Equals(r.info.name, resourceName, StringComparison.Ordinal))
+                    return r.maxAmount;
+            }
+
+            return 0.0;
+        }
+
+        private static bool VacuumExplosionPartEligibleForFuelRule(Part part)
+        {
+            if (!BlastFxRuntimeConfig.VacuumExplosionRequireEligibleFuelPart)
+                return true;
+
+            if (part == null || part.partInfo == null || part.Modules == null)
+                return false;
+
+            if (KerbalFxUtil.PartHasModule(part, "KerbalEVA"))
+                return false;
+
+            if (KerbalFxUtil.PartHasModule(part, "ModuleCommand"))
+                return true;
+
+            for (int i = 0; i < part.Modules.Count; i++)
+            {
+                if (part.Modules[i] is ModuleEngines)
+                    return true;
+            }
+
+            double minR = Math.Max(1e-9, BlastFxRuntimeConfig.VacuumExplosionMinFuelReserve);
+
+            if (VacuumExplosionMaxCapacity(part, "LiquidFuel") >= minR)
+                return true;
+            if (VacuumExplosionMaxCapacity(part, "Oxidizer") >= minR)
+                return true;
+            if (VacuumExplosionMaxCapacity(part, "XenonGas") >= minR)
+                return true;
+            if (VacuumExplosionMaxCapacity(part, "SolidFuel") >= minR)
+                return true;
+            if (VacuumExplosionMaxCapacity(part, "MonoPropellant") >= minR)
+                return true;
+
+            return false;
+        }
+
         private static bool HasDecouplerModule(Part p)
         {
             if (p == null || p.Modules == null) return false;
@@ -712,7 +954,7 @@ namespace KerbalFX.BlastFX
 
             string name = p.partInfo != null ? p.partInfo.name : string.Empty;
             string rawTitle = p.partInfo != null ? p.partInfo.title : string.Empty;
-            string cacheKey = name + "|" + rawTitle;
+            string cacheKey = !string.IsNullOrEmpty(name) ? name : rawTitle;
             if (tokenMatchCache.TryGetValue(cacheKey, out var cached)) return cached;
 
             string localizedTitle = null;
@@ -969,8 +1211,8 @@ namespace KerbalFX.BlastFX
             return 0f;
         }
 
-        private void SpawnFx(FxKind fxKind, Vector3 position, Vector3 axis,
-            int layer, FxSizeClass sizeClass, bool inVacuum)
+        private void SpawnFx(FxKind fxKind, Vector3 position, Part sourcePart,
+            Vector3 axis, int layer, FxSizeClass sizeClass, bool inVacuum)
         {
             float lodMul = GetLodMultiplier(position);
             if (lodMul <= 0f) return;
@@ -989,7 +1231,12 @@ namespace KerbalFX.BlastFX
             }
 
             if (inVacuum && fxKind != FxKind.UndockGas)
-                SpawnVacuumDebris(position, axis, layer, sizeClass, lodMul);
+            {
+                float vacuumCountScale = fxKind == FxKind.SoftPuff
+                    ? VacuumDebrisSoftDecouplerCountScale
+                    : 1f;
+                SpawnVacuumDebris(position, sourcePart, axis, layer, sizeClass, lodMul, vacuumCountScale);
+            }
         }
 
         private void SpawnPyroBurst(Vector3 position, Vector3 axis, int layer,
@@ -1018,6 +1265,16 @@ namespace KerbalFX.BlastFX
             slot.ReturnTime = Time.time + PyroReturnDelay;
             if (slot.ReturnTime < nextPoolReturnAt)
                 nextPoolReturnAt = slot.ReturnTime;
+
+            if (BlastFxWantFxProbe())
+            {
+                debugLastPyroTime = Time.time;
+                debugLastPyroSparks = sparkCount;
+                debugLastPyroChunks = chunkCount;
+                debugLastPyroSmoke = smokeCount;
+                debugLastPyroClass = sizeClass;
+                debugLastPyroLod = lodMul;
+            }
 
             if (BlastFxConfig.DebugLogging)
             {
@@ -1100,19 +1357,58 @@ namespace KerbalFX.BlastFX
             }
         }
 
-        private void SpawnVacuumDebris(Vector3 position, Vector3 axis, int layer,
-            FxSizeClass sizeClass, float lodMul)
+        private void SpawnVacuumDebris(Vector3 position, Part sourcePart,
+            Vector3 axis, int layer, FxSizeClass sizeClass, float lodMul, float countScale)
         {
             PoolSlot slot = AcquireVacuum(sizeClass);
             if (slot == null) return;
 
             int idx = (int)sizeClass;
-            Vector3 n = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.up;
-            Quaternion rot = Quaternion.FromToRotation(Vector3.up, n);
-            ActivateSlot(slot, position, rot, layer);
+            Quaternion rot = Quaternion.identity;
+            if (!slot.VacuumDebrisFromBundledPrefab)
+            {
+                Vector3 n = axis.sqrMagnitude > 0.0001f ? axis.normalized : Vector3.up;
+                rot = Quaternion.FromToRotation(Vector3.up, n);
+            }
+            else if (slot.Chunks != null)
+            {
+                float sizeScale = VacuumDebrisBundleSizeScales[idx];
+                float scl = VacuumDebrisBundleScale * sizeScale * Mathf.Lerp(0.78f, 1.14f, lodMul);
+                Transform tr = slot.Chunks.transform;
+                tr.localPosition = Vector3.zero;
+                tr.localRotation = Quaternion.identity;
+                tr.localScale = Vector3.one * scl;
+            }
 
-            int debrisCount = Mathf.Max(4, Mathf.RoundToInt(VacuumDebrisCounts[idx] * lodMul));
+            ActivateSlot(slot, position, rot, layer);
+            slot.AnchorTransform = slot.VacuumDebrisFromBundledPrefab
+                ? ResolveVacuumDebrisAnchor(sourcePart)
+                : null;
+
+            int debrisCount = Mathf.Max(4, Mathf.RoundToInt(VacuumDebrisCounts[idx] * lodMul * countScale));
+            if (slot.VacuumDebrisFromBundledPrefab)
+                debrisCount = Mathf.Max(4, Mathf.RoundToInt(debrisCount * VacuumDebrisBundleCountScale));
             if (slot.Chunks != null) slot.Chunks.Emit(debrisCount);
+
+            if (BlastFxWantFxProbe())
+            {
+                debugLastVacuumTime = Time.time;
+                debugLastVacuumEmit = debrisCount;
+                debugLastVacuumBundle = slot.VacuumDebrisFromBundledPrefab;
+                debugLastVacuumClass = sizeClass;
+                debugLastVacuumLod = lodMul;
+                debugVacuumSpawns++;
+                debugVacuumEmitted += debrisCount;
+                debugLastVacuumProbePc = -1;
+                debugLastVacuumProbeLatePc = -1;
+            }
+
+            if (BlastFxWantFxProbe() && slot.Chunks != null)
+                StartCoroutine(BlastFxVacuumDebrisDebugFrames(
+                    slot.Chunks, debrisCount, sizeClass, lodMul));
+
+            if (BlastFxWantFxProbe() && slot.VacuumDebrisFromBundledPrefab)
+                StartCoroutine(BlastFxVacuumDebrisAnchorProbe(slot));
 
             if (!slot.Busy)
                 activePoolSlotCount++;

@@ -14,6 +14,7 @@ Ground interaction FX module for launch and landing.
 ## Depends on
 
 - `KerbalFX Core`
+- `KSPBurst`
 
 ## Config
 

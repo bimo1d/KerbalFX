@@ -84,6 +84,22 @@ else {
 $managedDir = Join-Path $kspRoot "KSP_x64_Data\Managed"
 $buildTempDir = Join-Path $repoRoot ".build"
 
+$harmonyDll = Join-Path $gameDataDir "000_Harmony\0Harmony.dll"
+if (-not (Test-Path $harmonyDll)) {
+    throw "BlastFX build requires LibHarmony (0Harmony.dll under GameData/000_Harmony). Missing: $harmonyDll"
+}
+
+$kspBurstPluginDir = Join-Path $gameDataDir "000_KSPBurst\Plugins"
+$kspBurstReferenceNames = @(
+    "KSPBurst.dll",
+    "Unity.Burst.dll",
+    "Unity.Burst.Unsafe.dll",
+    "Unity.Collections.dll",
+    "Unity.Jobs.dll",
+    "Unity.Mathematics.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll"
+)
+
 if (-not (Test-Path $managedDir)) {
     throw "KSP managed folder not found: $managedDir"
 }
@@ -98,6 +114,8 @@ $referenceNames = @(
     "Assembly-CSharp.dll",
     "UnityEngine.dll",
     "UnityEngine.CoreModule.dll",
+    "UnityEngine.AssetBundleModule.dll",
+    "UnityEngine.AudioModule.dll",
     "UnityEngine.ParticleSystemModule.dll",
     "UnityEngine.PhysicsModule.dll",
     "UnityEngine.VehiclesModule.dll",
@@ -147,6 +165,22 @@ function Get-AdditionalReferenceArgs {
     }
 
     return $args
+}
+
+function Get-KspBurstReferencePaths {
+    if (-not (Test-Path $kspBurstPluginDir)) {
+        throw "Burst-enabled KerbalFX modules require KSPBurst under GameData/000_KSPBurst. Missing: $kspBurstPluginDir"
+    }
+
+    $paths = @()
+    foreach ($name in $kspBurstReferenceNames) {
+        $path = Join-Path $kspBurstPluginDir $name
+        if (-not (Test-Path $path)) {
+            throw "Missing KSPBurst reference assembly: $path"
+        }
+        $paths += $path
+    }
+    return $paths
 }
 
 function Get-SourceFiles {
@@ -238,7 +272,7 @@ $assemblySpecs = @(
         OutputPath = (Join-Path $repoRoot "AeroFX\Plugins\KerbalFX.AeroFX.dll")
         TempOutputPath = (Join-Path $buildTempDir "KerbalFX.AeroFX.dll")
         SourceDirs = @("AeroFX\PluginSource")
-        AdditionalReferencePaths = @($coreOutputPath)
+        AdditionalReferencePaths = @($coreOutputPath) + (Get-KspBurstReferencePaths)
     }
     [pscustomobject]@{
         Id = "RoverDust"
@@ -252,14 +286,14 @@ $assemblySpecs = @(
         OutputPath = (Join-Path $repoRoot "ImpactPuffs\Plugins\KerbalFX.ImpactPuffs.dll")
         TempOutputPath = (Join-Path $buildTempDir "KerbalFX.ImpactPuffs.dll")
         SourceDirs = @("ImpactPuffs\PluginSource")
-        AdditionalReferencePaths = @($coreOutputPath)
+        AdditionalReferencePaths = @($coreOutputPath) + (Get-KspBurstReferencePaths)
     }
     [pscustomobject]@{
         Id = "BlastFX"
         OutputPath = (Join-Path $repoRoot "BlastFX\Plugins\KerbalFX.BlastFX.dll")
         TempOutputPath = (Join-Path $buildTempDir "KerbalFX.BlastFX.dll")
         SourceDirs = @("BlastFX\PluginSource")
-        AdditionalReferencePaths = @($coreOutputPath)
+        AdditionalReferencePaths = @($coreOutputPath, $harmonyDll)
     }
 )
 

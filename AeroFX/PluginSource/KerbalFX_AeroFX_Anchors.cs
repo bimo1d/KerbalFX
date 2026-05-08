@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using KSP.Localization;
+using Unity.Collections;
 using UnityEngine;
 
 namespace KerbalFX.AeroFX
@@ -222,8 +223,8 @@ namespace KerbalFX.AeroFX
         private static Vector3 cachedForwardAxis;
         private static Vector3 cachedRightAxis;
         private static Vector3 cachedCenterOfMass;
-        private static bool useFastAnchorScan = true;
         private static int observedConfigRevision;
+        private static PartBoundsCache activePartBoundsCache;
 
         private static readonly List<Candidate> allCandidates = new List<Candidate>(32);
         private static readonly List<Candidate> selectedCandidates = new List<Candidate>(8);
@@ -245,12 +246,95 @@ namespace KerbalFX.AeroFX
 
         private static readonly WeightedScoreDescending weightedScoreComparer = new WeightedScoreDescending();
 
+        public sealed class PartBoundsCache
+        {
+            private struct CachedRenderers
+            {
+                public Part Part;
+                public Renderer[] Renderers;
+                public bool HasRenderers;
+            }
+
+            private readonly Dictionary<uint, CachedRenderers> renderersByPart =
+                new Dictionary<uint, CachedRenderers>(64);
+            private NativeArray<AnchorCandidateMetricInput> metricInput;
+            private NativeArray<AnchorCandidateMetricOutput> metricOutput;
+
+            internal NativeArray<AnchorCandidateMetricInput> MetricInput
+            {
+                get { return metricInput; }
+            }
+
+            internal NativeArray<AnchorCandidateMetricOutput> MetricOutput
+            {
+                get { return metricOutput; }
+            }
+
+            public void Clear()
+            {
+                renderersByPart.Clear();
+            }
+
+            public void Dispose()
+            {
+                if (metricInput.IsCreated)
+                    metricInput.Dispose();
+                if (metricOutput.IsCreated)
+                    metricOutput.Dispose();
+            }
+
+            internal void EnsureMetricCapacity(int count)
+            {
+                if (count <= 0)
+                    return;
+                if (metricInput.IsCreated && metricInput.Length >= count)
+                    return;
+
+                if (metricInput.IsCreated)
+                    metricInput.Dispose();
+                if (metricOutput.IsCreated)
+                    metricOutput.Dispose();
+                metricInput = new NativeArray<AnchorCandidateMetricInput>(
+                    count,
+                    Allocator.Persistent,
+                    NativeArrayOptions.UninitializedMemory);
+                metricOutput = new NativeArray<AnchorCandidateMetricOutput>(
+                    count,
+                    Allocator.Persistent,
+                    NativeArrayOptions.UninitializedMemory);
+            }
+
+            public bool TryGetBounds(Part part, out Bounds bounds)
+            {
+                bounds = new Bounds();
+                if (part == null)
+                    return false;
+
+                CachedRenderers cached;
+                if (renderersByPart.TryGetValue(part.flightID, out cached) && cached.Part == part)
+                {
+                    return cached.HasRenderers
+                        && ComputePartBounds(cached.Renderers, out bounds);
+                }
+
+                Renderer[] renderers = CollectPartRenderers(part);
+                bool hasRenderers = renderers != null && renderers.Length > 0;
+                renderersByPart[part.flightID] = new CachedRenderers
+                {
+                    Part = part,
+                    Renderers = renderers,
+                    HasRenderers = hasRenderers
+                };
+                return hasRenderers && ComputePartBounds(renderers, out bounds);
+            }
+        }
+
         public static int TryResolveAll(
             Vessel vessel,
             WingtipRibbonAnchor[] results,
             int maxResults,
-            bool fastAnchorScan,
             bool buildCandidateSummary,
+            PartBoundsCache partBoundsCache,
             out int liftPartCount,
             out int candidateCount,
             out string candidateSummary)
@@ -279,7 +363,7 @@ namespace KerbalFX.AeroFX
             cachedForwardAxis = forward;
             cachedRightAxis = rightAxis;
             cachedCenterOfMass = vessel.CoM;
-            useFastAnchorScan = fastAnchorScan;
+            activePartBoundsCache = partBoundsCache;
 
             int resultLimit = Mathf.Clamp(maxResults, 1, results.Length);
             Vector3 centerOfMass = vessel.CoM;
@@ -307,12 +391,7 @@ namespace KerbalFX.AeroFX
                 Vector3 radialOffset = Vector3.ProjectOnPlane(offset, forward);
                 if (radialOffset.magnitude < 0.20f)
                 {
-                    if (!useFastAnchorScan)
-                        continue;
-
-                    float radialReach = Mathf.Max(GetBoundsReach(bounds, rightAxis), GetBoundsReach(bounds, upAxis));
-                    if (radialOffset.magnitude + radialReach < 0.20f)
-                        continue;
+                    continue;
                 }
 
                 Vector3 supportPoint;
@@ -332,9 +411,6 @@ namespace KerbalFX.AeroFX
                     continue;
                 }
 
-                Vector3 supportOffset = supportPoint - centerOfMass;
-                Vector3 supportRadialOffset = Vector3.ProjectOnPlane(supportOffset, forward);
-                float lateral = Vector3.Dot(outward, rightAxis);
                 Candidate candidate = new Candidate
                 {
                     Part = part,
@@ -343,11 +419,6 @@ namespace KerbalFX.AeroFX
                     RadialGroupPoint = boundsCenter,
                     Outward = outward,
                     Score = score,
-                    WeightedScore = score + GetRoleScoreBias(role),
-                    SideSign = lateral >= 0f ? 1f : -1f,
-                    LateralDistance = Mathf.Abs(Vector3.Dot(supportOffset, rightAxis)),
-                    RadialDistance = supportRadialOffset.magnitude,
-                    ForwardOffset = Vector3.Dot(offset, forward),
                     VisualSize = bounds.size.magnitude,
                     Role = role
                 };
@@ -357,8 +428,12 @@ namespace KerbalFX.AeroFX
             }
 
             if (allCandidates.Count == 0)
+            {
+                activePartBoundsCache = null;
                 return 0;
+            }
 
+            EvaluateCandidateMetrics(centerOfMass, forward, rightAxis, partBoundsCache);
             allCandidates.Sort(weightedScoreComparer);
             if (buildCandidateSummary)
                 candidateSummary = BuildCandidateSummary();
@@ -400,6 +475,7 @@ namespace KerbalFX.AeroFX
                 results[i] = default(WingtipRibbonAnchor);
             }
 
+            activePartBoundsCache = null;
             return count;
         }
 

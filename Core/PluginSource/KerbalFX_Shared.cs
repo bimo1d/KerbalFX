@@ -3,12 +3,18 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace KerbalFX
 {
     internal static class KerbalFxUtil
     {
+        private static readonly ProfilerMarker ConfigFileStampMarker =
+            new ProfilerMarker("KerbalFX.Core.ConfigFileStamp");
+        private static readonly ProfilerMarker VesselPartSignatureMarker =
+            new ProfilerMarker("KerbalFX.Core.ComputeVesselPartSignature");
+
         public static float ReadFloat(ConfigNode node, string key, float fallback, float min, float max)
         {
             if (node == null || string.IsNullOrEmpty(key) || !node.HasValue(key))
@@ -56,22 +62,6 @@ namespace KerbalFX
             return !string.IsNullOrEmpty(source)
                 && !string.IsNullOrEmpty(value)
                 && source.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        public static bool ContainsAnyTokenInHierarchy(Transform t, string[] tokens, int maxDepth)
-        {
-            if (t == null || tokens == null || maxDepth <= 0)
-                return false;
-            Transform current = t;
-            int depth = 0;
-            while (current != null && depth < maxDepth)
-            {
-                if (ContainsAnyToken(current.name, tokens))
-                    return true;
-                current = current.parent;
-                depth++;
-            }
-            return false;
         }
 
         public static bool ContainsAnyTokenInObjectHierarchy(Transform t, string[] tokens, int maxDepth)
@@ -192,26 +182,45 @@ namespace KerbalFX
                 return false;
             float a = 1f;
             if (parts.Length >= 4)
-                float.TryParse(parts[3].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out a);
+            {
+                if (!float.TryParse(parts[3].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out a))
+                    a = 1f;
+            }
             color = new Color(Mathf.Clamp01(r), Mathf.Clamp01(g), Mathf.Clamp01(b), Mathf.Clamp01(a));
             return true;
         }
 
         public static bool HasConfigFileChanged(string path, ref DateTime stamp)
         {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-                return false;
-            DateTime writeUtc = File.GetLastWriteTimeUtc(path);
-            if (writeUtc <= DateTime.MinValue || writeUtc <= stamp)
-                return false;
-            stamp = writeUtc;
-            return true;
+            ConfigFileStampMarker.Begin();
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                    return false;
+                DateTime writeUtc = File.GetLastWriteTimeUtc(path);
+                if (writeUtc <= DateTime.MinValue || writeUtc <= stamp)
+                    return false;
+                stamp = writeUtc;
+                return true;
+            }
+            finally
+            {
+                ConfigFileStampMarker.End();
+            }
         }
 
         public static void PrimeConfigFileStamp(string path, ref DateTime stamp)
         {
-            if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                stamp = File.GetLastWriteTimeUtc(path);
+            ConfigFileStampMarker.Begin();
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                    stamp = File.GetLastWriteTimeUtc(path);
+            }
+            finally
+            {
+                ConfigFileStampMarker.End();
+            }
         }
 
         public static bool ModuleNameMatches(PartModule module, string moduleName)
@@ -285,28 +294,28 @@ namespace KerbalFX
                 + Mathf.Abs(normalized.z) * extents.z;
         }
 
-        public static bool ExpandedBoundsContains(Bounds bounds, Vector3 point, float radius)
-        {
-            float safeRadius = Mathf.Max(0f, radius);
-            if (safeRadius > 0f)
-                bounds.Expand(safeRadius);
-            return bounds.Contains(point) || bounds.SqrDistance(point) <= safeRadius * safeRadius;
-        }
-
         public static uint ComputeVesselPartSignature(Vessel vessel)
         {
-            if (vessel == null || vessel.parts == null)
-                return 0u;
-
-            uint hash = 17u;
-            for (int i = 0; i < vessel.parts.Count; i++)
+            VesselPartSignatureMarker.Begin();
+            try
             {
-                Part part = vessel.parts[i];
-                if (part != null)
-                    hash = hash * 31u + part.flightID;
-            }
+                if (vessel == null || vessel.parts == null)
+                    return 0u;
 
-            return hash;
+                uint hash = 17u;
+                for (int i = 0; i < vessel.parts.Count; i++)
+                {
+                    Part part = vessel.parts[i];
+                    if (part != null)
+                        hash = hash * 31u + part.flightID;
+                }
+
+                return hash;
+            }
+            finally
+            {
+                VesselPartSignatureMarker.End();
+            }
         }
 
         public static object ReadMemberValue(object target, string memberName)

@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using System.Globalization;
 using KSP.Localization;
+using Unity.Collections;
+using Unity.Mathematics;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace KerbalFX.AeroFX
@@ -18,8 +21,6 @@ namespace KerbalFX.AeroFX
         private readonly Part sourcePart;
         private readonly string debugId;
         private readonly List<RibbonPoint> ribbon = new List<RibbonPoint>(512);
-        private readonly List<Vector3> renderPositions = new List<Vector3>(MaxRibbonRenderPoints);
-        private Vector3[] renderPositionsBuffer = new Vector3[64];
 
         private bool disposed;
         private float smoothedIntensity;
@@ -75,9 +76,13 @@ namespace KerbalFX.AeroFX
         private const float LightAwareAirSunFloorMin = 0.10f;
         private const float LightAwareAirSunFloorMax = 0.82f;
         private const float RibbonRgbDimFloor = KerbalFxLightingCore.RgbDimFloor;
-        private const int MaxRibbonPoints = 512;
-        private const int SegmentSubdivisions = 6;
-        private const int MaxRibbonRenderPoints = (MaxRibbonPoints - 1) * SegmentSubdivisions + 3;
+        internal const int MaxRibbonPoints = 512;
+        internal const int SegmentSubdivisions = 6;
+        internal const int MaxRibbonRenderPoints = (MaxRibbonPoints - 1) * SegmentSubdivisions + 3;
+        private static readonly ProfilerMarker UpdateLineRendererMarker =
+            new ProfilerMarker("KerbalFX.AeroFX.UpdateLineRenderer");
+        private static readonly ProfilerMarker SetPositionsMarker =
+            new ProfilerMarker("KerbalFX.AeroFX.LineRendererSetPositionLoop");
 
         public WingtipRibbonEmitter(Part part, string label)
         {
@@ -330,9 +335,6 @@ namespace KerbalFX.AeroFX
             lastEmitBodyLocalPosition = newBodyLocalPosition;
             hasLastEmitBodyLocalPosition = true;
 
-            UpdateLineRenderer();
-            UpdateLineDynamics(sample);
-
             if (AeroFxConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel)
             {
                 debugTimer -= dt;
@@ -379,53 +381,90 @@ namespace KerbalFX.AeroFX
                 Object.Destroy(root);
         }
 
-        private void UpdateLineRenderer()
+        internal int BuildRibbonPathRequest(
+            NativeArray<float3> input,
+            int inputOffset,
+            int outputOffset,
+            out AeroRibbonPathRequest request)
         {
-            int count = ribbon.Count;
-            if (count <= 0 || bodyTransform == null)
-            {
-                line.enabled = false;
-                line.positionCount = 0;
-                return;
-            }
+            request = default(AeroRibbonPathRequest);
+            if (disposed || bodyTransform == null || !input.IsCreated)
+                return 0;
 
-            line.enabled = true;
-            BuildSmoothedRenderPath(count);
+            int inputCount = Mathf.Min(ribbon.Count, MaxRibbonPoints);
+            if (inputCount <= 0 || inputOffset < 0 || inputOffset + inputCount > input.Length)
+                return 0;
 
-            int renderCount = renderPositions.Count;
+            int renderCount = AeroRibbonPathBuilder.ComputeRenderCount(inputCount, SegmentSubdivisions);
             if (renderCount <= 0)
-            {
-                line.enabled = false;
-                line.positionCount = 0;
-                return;
-            }
+                return 0;
 
-            if (hasLiveHeadSegment)
-            {
-                renderPositions.Add(liveBridgeWorldPosition);
-                renderPositions.Add(liveHeadWorldPosition);
-                renderCount = renderPositions.Count;
-            }
+            for (int i = 0; i < inputCount; i++)
+                input[inputOffset + i] = AeroRibbonPathBuilder.ToFloat3(ribbon[i].BodyLocalPosition);
 
-            int effectiveCount = renderCount >= 2 ? renderCount : 2;
-            if (renderPositionsBuffer.Length < effectiveCount)
-            {
-                int newCapacity = Mathf.Max(renderPositionsBuffer.Length, 64);
-                while (newCapacity < effectiveCount)
-                    newCapacity *= 2;
-                renderPositionsBuffer = new Vector3[newCapacity];
-            }
-
-            for (int i = 0; i < renderCount; i++)
-                renderPositionsBuffer[i] = renderPositions[i];
-            if (renderCount == 1)
-                renderPositionsBuffer[1] = renderPositions[0];
-
-            line.positionCount = effectiveCount;
-            line.SetPositions(renderPositionsBuffer);
+            request.InputOffset = inputOffset;
+            request.OutputOffset = outputOffset;
+            request.BaseCount = inputCount;
+            request.SegmentSubdivisions = SegmentSubdivisions;
+            request.LocalToWorld = AeroRibbonPathBuilder.ToFloat4x4(bodyTransform.localToWorldMatrix);
+            return renderCount;
         }
 
-        private void UpdateLineDynamics(AeroRibbonSample sample)
+        internal int AppendLiveHead(NativeArray<float3> output, int outputOffset, int renderCount)
+        {
+            if (!hasLiveHeadSegment || !output.IsCreated)
+                return renderCount;
+            if (outputOffset < 0 || outputOffset + renderCount + 1 >= output.Length)
+                return renderCount;
+
+            output[outputOffset + renderCount++] = AeroRibbonPathBuilder.ToFloat3(liveBridgeWorldPosition);
+            output[outputOffset + renderCount++] = AeroRibbonPathBuilder.ToFloat3(liveHeadWorldPosition);
+            return renderCount;
+        }
+
+        internal void HideLineRenderer()
+        {
+            if (line == null)
+                return;
+
+            line.enabled = false;
+            line.positionCount = 0;
+        }
+
+        internal void ApplyLineRenderer(NativeArray<float3> output, int outputOffset, int renderCount)
+        {
+            UpdateLineRendererMarker.Begin();
+            try
+            {
+                if (line == null || !output.IsCreated || renderCount <= 0 || outputOffset < 0)
+                {
+                    HideLineRenderer();
+                    return;
+                }
+
+                line.enabled = true;
+                int effectiveCount = renderCount >= 2 ? renderCount : 2;
+                line.positionCount = effectiveCount;
+                SetPositionsMarker.Begin();
+                try
+                {
+                    for (int i = 0; i < renderCount; i++)
+                        line.SetPosition(i, AeroRibbonPathBuilder.ToVector3(output[outputOffset + i]));
+                    if (renderCount == 1)
+                        line.SetPosition(1, AeroRibbonPathBuilder.ToVector3(output[outputOffset]));
+                }
+                finally
+                {
+                    SetPositionsMarker.End();
+                }
+            }
+            finally
+            {
+                UpdateLineRendererMarker.End();
+            }
+        }
+
+        internal void UpdateLineDynamics(AeroRibbonSample sample)
         {
             if (!line.enabled)
                 return;
@@ -564,7 +603,7 @@ namespace KerbalFX.AeroFX
                 new GradientAlphaKey(BaseAlpha * 0.24f, 0.12f),
                 new GradientAlphaKey(BaseAlpha * 0.72f, 0.34f),
                 new GradientAlphaKey(BaseAlpha * 0.94f, 0.78f),
-                new GradientAlphaKey(BaseAlpha * 0.40f, 0.94f),
+                new GradientAlphaKey(BaseAlpha * 0.92f, 0.94f),
                 new GradientAlphaKey(0.02f, 1f)
             };
             cachedColorKeys = new GradientColorKey[]
@@ -595,67 +634,5 @@ namespace KerbalFX.AeroFX
             lastAppliedHeadAlpha = -1f;
         }
 
-        private void BuildSmoothedRenderPath(int baseCount)
-        {
-            renderPositions.Clear();
-
-            if (baseCount <= 0 || bodyTransform == null)
-                return;
-
-            if (baseCount == 1)
-            {
-                renderPositions.Add(bodyTransform.TransformPoint(ribbon[0].BodyLocalPosition));
-                return;
-            }
-
-            Vector3 p0 = bodyTransform.TransformPoint(ribbon[0].BodyLocalPosition);
-            Vector3 p1 = p0;
-            Vector3 p2 = bodyTransform.TransformPoint(ribbon[1].BodyLocalPosition);
-
-            for (int i = 0; i < baseCount - 1; i++)
-            {
-                Vector3 p3 = i + 2 < baseCount
-                    ? bodyTransform.TransformPoint(ribbon[i + 2].BodyLocalPosition)
-                    : p2;
-
-                bool isTail = i == baseCount - 2;
-                for (int step = 0; step < SegmentSubdivisions; step++)
-                {
-                    float u = (float)step / SegmentSubdivisions;
-                    renderPositions.Add(isTail
-                        ? Vector3.Lerp(p1, p2, u)
-                        : CatmullRom(p0, p1, p2, p3, u));
-                }
-
-                p0 = p1;
-                p1 = p2;
-                p2 = p3;
-            }
-
-            renderPositions.Add(p1);
-        }
-
-        private Vector3 CatmullRom(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float t)
-        {
-            float t2 = t * t;
-            float t3 = t2 * t;
-
-            float x = 0.5f * (
-                (2f * p1.x) +
-                (-p0.x + p2.x) * t +
-                (2f * p0.x - 5f * p1.x + 4f * p2.x - p3.x) * t2 +
-                (-p0.x + 3f * p1.x - 3f * p2.x + p3.x) * t3);
-            float y = 0.5f * (
-                (2f * p1.y) +
-                (-p0.y + p2.y) * t +
-                (2f * p0.y - 5f * p1.y + 4f * p2.y - p3.y) * t2 +
-                (-p0.y + 3f * p1.y - 3f * p2.y + p3.y) * t3);
-            float z = 0.5f * (
-                (2f * p1.z) +
-                (-p0.z + p2.z) * t +
-                (2f * p0.z - 5f * p1.z + 4f * p2.z - p3.z) * t2 +
-                (-p0.z + 3f * p1.z - 3f * p2.z + p3.z) * t3);
-            return new Vector3(x, y, z);
-        }
     }
 }

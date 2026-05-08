@@ -2,12 +2,18 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using KSP.Localization;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace KerbalFX.BlastFX
 {
     internal partial class BlastFxController
     {
+        private static readonly ProfilerMarker PoolAcquireMarker =
+            new ProfilerMarker("KerbalFX.BlastFX.PoolAcquire");
+        private static readonly ProfilerMarker PoolBuildMarker =
+            new ProfilerMarker("KerbalFX.BlastFX.PoolBuild");
+
         private void DestroyPools()
         {
             for (int i = 0; i < SizeClassCount; i++)
@@ -47,6 +53,7 @@ namespace KerbalFX.BlastFX
                 ReturnExpiredInList(dockSlots[c], now);
                 ReturnExpiredInList(vacuumSlots[c], now);
             }
+            ReturnExpiredKcsSlots(now);
         }
 
         private void ReturnExpiredInList(List<PoolSlot> pool, float now)
@@ -66,6 +73,7 @@ namespace KerbalFX.BlastFX
                 if (slot.Sparks != null) slot.Sparks.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
                 if (slot.Chunks != null) slot.Chunks.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
                 if (slot.Smoke != null)  slot.Smoke.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+                slot.AnchorTransform = null;
                 slot.Root.SetActive(false);
                 slot.Busy = false;
                 activePoolSlotCount = Math.Max(0, activePoolSlotCount - 1);
@@ -108,13 +116,24 @@ namespace KerbalFX.BlastFX
                     dockSlots[i].Add(slot);
                     yield return null;
                 }
+
+                while (vacuumSlots[i].Count < PrewarmVacuumSlotsPerSize)
+                {
+                    PoolSlot slot = BuildVacuumSlot(sizeClass);
+                    if (slot == null) break;
+                    vacuumSlots[i].Add(slot);
+                    yield return null;
+                }
             }
 
             poolPrewarmComplete = true;
-            BlastFxLog.DebugLog(Localizer.Format(
-                BlastFxLoc.LogPoolPrewarm,
-                CountPoolSlots(pyroSlots),
-                CountPoolSlots(puffSlots)));
+            if (BlastFxConfig.DebugLogging)
+            {
+                BlastFxLog.DebugLog(Localizer.Format(
+                    BlastFxLoc.LogPoolPrewarm,
+                    CountPoolSlots(pyroSlots),
+                    CountPoolSlots(puffSlots)));
+            }
         }
 
         private static int CountPoolSlots(List<PoolSlot>[] pools)
@@ -130,235 +149,342 @@ namespace KerbalFX.BlastFX
 
         private PoolSlot AcquirePyro(FxSizeClass sc)
         {
-            List<PoolSlot> pool = pyroSlots[(int)sc];
-            for (int i = 0; i < pool.Count; i++)
+            PoolAcquireMarker.Begin();
+            try
             {
-                if (!pool[i].Busy) return pool[i];
+                List<PoolSlot> pool = pyroSlots[(int)sc];
+                for (int i = 0; i < pool.Count; i++)
+                {
+                    if (!pool[i].Busy) return pool[i];
+                }
+                if (!TryTakePoolGrowBudget())
+                {
+                    PoolSlot recycled = RecycleOldestSlot(pool);
+                    if (recycled != null) return recycled;
+                }
+                PoolSlot fresh = BuildPyroSlot(sc);
+                if (fresh == null) return null;
+                pool.Add(fresh);
+                if (BlastFxConfig.DebugLogging)
+                {
+                    BlastFxLog.DebugLog(Localizer.Format(
+                        BlastFxLoc.LogPoolGrow,
+                        "pyro",
+                        sc,
+                        pool.Count));
+                }
+                return fresh;
             }
-            PoolSlot fresh = BuildPyroSlot(sc);
-            if (fresh == null) return null;
-            pool.Add(fresh);
-            BlastFxLog.DebugLog(Localizer.Format(
-                BlastFxLoc.LogPoolGrow,
-                "pyro",
-                sc,
-                pool.Count));
-            return fresh;
+            finally
+            {
+                PoolAcquireMarker.End();
+            }
         }
 
         private PoolSlot AcquirePuff(FxSizeClass sc)
         {
-            List<PoolSlot> pool = puffSlots[(int)sc];
-            for (int i = 0; i < pool.Count; i++)
+            PoolAcquireMarker.Begin();
+            try
             {
-                if (!pool[i].Busy) return pool[i];
+                List<PoolSlot> pool = puffSlots[(int)sc];
+                for (int i = 0; i < pool.Count; i++)
+                {
+                    if (!pool[i].Busy) return pool[i];
+                }
+                if (!TryTakePoolGrowBudget())
+                {
+                    PoolSlot recycled = RecycleOldestSlot(pool);
+                    if (recycled != null) return recycled;
+                }
+                PoolSlot fresh = BuildPuffSlot(sc);
+                if (fresh == null) return null;
+                pool.Add(fresh);
+                if (BlastFxConfig.DebugLogging)
+                {
+                    BlastFxLog.DebugLog(Localizer.Format(
+                        BlastFxLoc.LogPoolGrow,
+                        "puff",
+                        sc,
+                        pool.Count));
+                }
+                return fresh;
             }
-            PoolSlot fresh = BuildPuffSlot(sc);
-            if (fresh == null) return null;
-            pool.Add(fresh);
-            BlastFxLog.DebugLog(Localizer.Format(
-                BlastFxLoc.LogPoolGrow,
-                "puff",
-                sc,
-                pool.Count));
-            return fresh;
+            finally
+            {
+                PoolAcquireMarker.End();
+            }
         }
 
         private PoolSlot AcquireDock(FxSizeClass sc)
         {
-            List<PoolSlot> pool = dockSlots[(int)sc];
-            for (int i = 0; i < pool.Count; i++)
+            PoolAcquireMarker.Begin();
+            try
             {
-                if (!pool[i].Busy) return pool[i];
+                List<PoolSlot> pool = dockSlots[(int)sc];
+                for (int i = 0; i < pool.Count; i++)
+                {
+                    if (!pool[i].Busy) return pool[i];
+                }
+                if (!TryTakePoolGrowBudget())
+                {
+                    PoolSlot recycled = RecycleOldestSlot(pool);
+                    if (recycled != null) return recycled;
+                }
+                PoolSlot fresh = BuildDockSlot(sc);
+                if (fresh == null) return null;
+                pool.Add(fresh);
+                if (BlastFxConfig.DebugLogging)
+                {
+                    BlastFxLog.DebugLog(Localizer.Format(
+                        BlastFxLoc.LogPoolGrow,
+                        "dock",
+                        sc,
+                        pool.Count));
+                }
+                return fresh;
             }
-            PoolSlot fresh = BuildDockSlot(sc);
-            if (fresh == null) return null;
-            pool.Add(fresh);
-            BlastFxLog.DebugLog(Localizer.Format(
-                BlastFxLoc.LogPoolGrow,
-                "dock",
-                sc,
-                pool.Count));
-            return fresh;
+            finally
+            {
+                PoolAcquireMarker.End();
+            }
         }
 
         private PoolSlot AcquireVacuum(FxSizeClass sc)
         {
-            List<PoolSlot> pool = vacuumSlots[(int)sc];
-            for (int i = 0; i < pool.Count; i++)
+            PoolAcquireMarker.Begin();
+            try
             {
-                if (!pool[i].Busy) return pool[i];
+                List<PoolSlot> pool = vacuumSlots[(int)sc];
+                for (int i = 0; i < pool.Count; i++)
+                {
+                    if (!pool[i].Busy) return pool[i];
+                }
+                if (!TryTakePoolGrowBudget())
+                {
+                    PoolSlot recycled = RecycleOldestSlot(pool);
+                    if (recycled != null) return recycled;
+                }
+                PoolSlot fresh = BuildVacuumSlot(sc);
+                if (fresh == null) return null;
+                pool.Add(fresh);
+                if (BlastFxConfig.DebugLogging)
+                {
+                    BlastFxLog.DebugLog(Localizer.Format(
+                        BlastFxLoc.LogPoolGrow,
+                        "vacuum",
+                        sc,
+                        pool.Count));
+                }
+                return fresh;
             }
-            PoolSlot fresh = BuildVacuumSlot(sc);
-            if (fresh == null) return null;
-            pool.Add(fresh);
-            BlastFxLog.DebugLog(Localizer.Format(
-                BlastFxLoc.LogPoolGrow,
-                "vacuum",
-                sc,
-                pool.Count));
-            return fresh;
+            finally
+            {
+                PoolAcquireMarker.End();
+            }
         }
 
         private static PoolSlot BuildPyroSlot(FxSizeClass sc)
         {
-            int idx = (int)sc;
-            float size01 = SizeToSize01[idx];
-            float partRadius = SizeToRadius[idx];
-            float ringScale = Mathf.Lerp(0.98f, 1.16f, size01);
-            float rr = Mathf.Max(0.08f,
-                (BlastFxRuntimeConfig.BaseRadius + partRadius * BlastFxRuntimeConfig.RadiusFromPart)
-                * ringScale);
-
-            float sparkSpeedScale = Mathf.Lerp(0.92f, 1.68f, size01);
-            float smokeSpeedScale = Mathf.Lerp(0.92f, 1.44f, size01);
-            float chunkSpeedScale = Mathf.Lerp(1.26f, 1.92f, size01)
-                * BlastFxRuntimeConfig.FragmentSpeedMultiplier;
-            float sparkSizeScale = Mathf.Lerp(0.90f, 1.34f, size01);
-            float smokeSizeScale = Mathf.Lerp(0.96f, 1.48f, size01);
-            float chunkSizeScale = Mathf.Lerp(0.84f, 1.85f, size01);
-
-            int maxSparks = PyroSparkCounts[idx];
-            int maxChunks = Mathf.Clamp(
-                Mathf.RoundToInt(PyroChunkCounts[idx] * BlastFxRuntimeConfig.FragmentCountMultiplier),
-                2, 320);
-            int maxSmoke  = PyroSmokeCounts[idx];
-
-            GameObject root = new GameObject("KerbalFX_BlastFX_PyroPool");
-            root.SetActive(false);
-
-            ParticleSystem sparks = CreateSparks(root.transform, 0, rr,
-                maxSparks, sparkSpeedScale, sparkSizeScale);
-            ParticleSystem chunks = CreateChunks(root.transform, 0, rr,
-                maxChunks, chunkSpeedScale, chunkSizeScale);
-            ParticleSystem smoke  = CreateSmoke(root.transform, 0, rr,
-                maxSmoke, smokeSpeedScale, smokeSizeScale);
-
-            if (sparks == null && chunks == null && smoke == null)
+            PoolBuildMarker.Begin();
+            try
             {
-                Destroy(root);
-                return null;
+                int idx = (int)sc;
+                float size01 = SizeToSize01[idx];
+                float partRadius = SizeToRadius[idx];
+                float ringScale = Mathf.Lerp(0.98f, 1.16f, size01);
+                float rr = Mathf.Max(0.08f,
+                    (BlastFxRuntimeConfig.BaseRadius + partRadius * BlastFxRuntimeConfig.RadiusFromPart)
+                    * ringScale);
+
+                float sparkSpeedScale = Mathf.Lerp(0.92f, 1.68f, size01);
+                float smokeSpeedScale = Mathf.Lerp(0.92f, 1.44f, size01);
+                float chunkSpeedScale = Mathf.Lerp(1.26f, 1.92f, size01)
+                    * BlastFxRuntimeConfig.FragmentSpeedMultiplier;
+                float sparkSizeScale = Mathf.Lerp(0.90f, 1.34f, size01);
+                float smokeSizeScale = Mathf.Lerp(0.96f, 1.48f, size01);
+                float chunkSizeScale = Mathf.Lerp(0.84f, 1.85f, size01);
+
+                int maxSparks = PyroSparkCounts[idx];
+                int maxChunks = Mathf.Clamp(
+                    Mathf.RoundToInt(PyroChunkCounts[idx] * BlastFxRuntimeConfig.FragmentCountMultiplier),
+                    2, 320);
+                int maxSmoke  = PyroSmokeCounts[idx];
+
+                GameObject root = new GameObject("KerbalFX_BlastFX_PyroPool");
+                root.SetActive(false);
+
+                ParticleSystem sparks = CreateSparks(root.transform, 0, rr,
+                    maxSparks, sparkSpeedScale, sparkSizeScale);
+                ParticleSystem chunks = CreateChunks(root.transform, 0, rr,
+                    maxChunks, chunkSpeedScale, chunkSizeScale);
+                ParticleSystem smoke  = CreateSmoke(root.transform, 0, rr,
+                    maxSmoke, smokeSpeedScale, smokeSizeScale);
+
+                if (sparks == null && chunks == null && smoke == null)
+                {
+                    Destroy(root);
+                    return null;
+                }
+
+                return new PoolSlot
+                {
+                    Root = root,
+                    Sparks = sparks,
+                    Chunks = chunks,
+                    Smoke = smoke,
+                    VacuumDebrisFromBundledPrefab = false,
+                    Busy = false,
+                    ReturnTime = 0f
+                };
             }
-
-            return new PoolSlot
+            finally
             {
-                Root = root,
-                Sparks = sparks,
-                Chunks = chunks,
-                Smoke = smoke,
-                Busy = false,
-                ReturnTime = 0f
-            };
+                PoolBuildMarker.End();
+            }
         }
 
         private static PoolSlot BuildPuffSlot(FxSizeClass sc)
         {
-            int idx = (int)sc;
-            float size01 = SizeToSize01[idx];
-            float partRadius = SizeToRadius[idx];
-            float rr = Mathf.Max(0.07f,
-                (BlastFxRuntimeConfig.BaseRadius * 0.58f + partRadius * 0.62f)
-                * Mathf.Lerp(1.00f, 1.14f, size01));
-
-            int maxSmoke = PuffSmokeCounts[idx];
-            float smokeSpeedScale = Mathf.Lerp(2.10f, 2.70f, size01);
-            float smokeSizeScale  = Mathf.Lerp(0.74f, 0.98f, size01);
-
-            GameObject root = new GameObject("KerbalFX_BlastFX_PuffPool");
-            root.SetActive(false);
-
-            ParticleSystem smoke = CreateSoftPuffSmoke(root.transform, 0, rr,
-                maxSmoke, smokeSpeedScale, smokeSizeScale);
-
-            if (smoke == null)
+            PoolBuildMarker.Begin();
+            try
             {
-                Destroy(root);
-                return null;
+                int idx = (int)sc;
+                float size01 = SizeToSize01[idx];
+                float partRadius = SizeToRadius[idx];
+                float rr = Mathf.Max(0.07f,
+                    (BlastFxRuntimeConfig.BaseRadius * 0.58f + partRadius * 0.62f)
+                    * Mathf.Lerp(1.00f, 1.14f, size01));
+
+                int maxSmoke = PuffSmokeCounts[idx];
+                float smokeSpeedScale = Mathf.Lerp(2.10f, 2.70f, size01);
+                float smokeSizeScale  = Mathf.Lerp(0.74f, 0.98f, size01);
+
+                GameObject root = new GameObject("KerbalFX_BlastFX_PuffPool");
+                root.SetActive(false);
+
+                ParticleSystem smoke = CreateSoftPuffSmoke(root.transform, 0, rr,
+                    maxSmoke, smokeSpeedScale, smokeSizeScale);
+
+                if (smoke == null)
+                {
+                    Destroy(root);
+                    return null;
+                }
+
+                return new PoolSlot
+                {
+                    Root = root,
+                    Sparks = null,
+                    Chunks = null,
+                    Smoke = smoke,
+                    VacuumDebrisFromBundledPrefab = false,
+                    Busy = false,
+                    ReturnTime = 0f
+                };
             }
-
-            return new PoolSlot
+            finally
             {
-                Root = root,
-                Sparks = null,
-                Chunks = null,
-                Smoke = smoke,
-                Busy = false,
-                ReturnTime = 0f
-            };
+                PoolBuildMarker.End();
+            }
         }
 
         private static PoolSlot BuildDockSlot(FxSizeClass sc)
         {
-            int idx = (int)sc;
-            float size01 = SizeToSize01[idx];
-            float rr = DockingRingRadii[idx];
-
-            int maxSmoke = DockGasCounts[idx];
-            float smokeSpeedScale = Mathf.Lerp(0.665f, 0.91f, size01);
-            float smokeSizeScale  = Mathf.Lerp(0.30f, 0.86f, size01);
-
-            GameObject root = new GameObject("KerbalFX_BlastFX_DockPool");
-            root.SetActive(false);
-
-            ParticleSystem smoke = CreateUndockGasSmoke(root.transform, 0, rr,
-                maxSmoke, smokeSpeedScale, smokeSizeScale);
-
-            if (smoke == null)
+            PoolBuildMarker.Begin();
+            try
             {
-                Destroy(root);
-                return null;
+                int idx = (int)sc;
+                float size01 = SizeToSize01[idx];
+                float rr = DockingRingRadii[idx];
+
+                int maxSmoke = DockGasCounts[idx];
+                float smokeSpeedScale = Mathf.Lerp(0.665f, 0.91f, size01);
+                float smokeSizeScale  = Mathf.Lerp(0.30f, 0.86f, size01);
+
+                GameObject root = new GameObject("KerbalFX_BlastFX_DockPool");
+                root.SetActive(false);
+
+                ParticleSystem smoke = CreateUndockGasSmoke(root.transform, 0, rr,
+                    maxSmoke, smokeSpeedScale, smokeSizeScale);
+
+                if (smoke == null)
+                {
+                    Destroy(root);
+                    return null;
+                }
+
+                return new PoolSlot
+                {
+                    Root = root,
+                    Sparks = null,
+                    Chunks = null,
+                    Smoke = smoke,
+                    VacuumDebrisFromBundledPrefab = false,
+                    Busy = false,
+                    ReturnTime = 0f
+                };
             }
-
-            return new PoolSlot
+            finally
             {
-                Root = root,
-                Sparks = null,
-                Chunks = null,
-                Smoke = smoke,
-                Busy = false,
-                ReturnTime = 0f
-            };
+                PoolBuildMarker.End();
+            }
         }
 
         private static PoolSlot BuildVacuumSlot(FxSizeClass sc)
         {
-            int idx = (int)sc;
-            float size01 = SizeToSize01[idx];
-            float partRadius = SizeToRadius[idx];
-            float rr = Mathf.Max(0.06f,
-                (BlastFxRuntimeConfig.BaseRadius * 0.55f + partRadius * 0.70f)
-                * Mathf.Lerp(0.92f, 1.16f, size01));
-
-            int maxDebris = VacuumDebrisCounts[idx];
-            float debrisSpeedScale = Mathf.Lerp(0.765f, 1.08f, size01);
-            float debrisSizeScale  = Mathf.Lerp(0.55f, 0.90f, size01);
-
-            GameObject root = new GameObject("KerbalFX_BlastFX_VacuumPool");
-            root.SetActive(false);
-
-            ParticleSystem debris = CreateVacuumDebris(root.transform, 0, rr,
-                maxDebris, debrisSpeedScale, debrisSizeScale);
-
-            if (debris == null)
+            PoolBuildMarker.Begin();
+            try
             {
-                Destroy(root);
-                return null;
+                int idx = (int)sc;
+                float size01 = SizeToSize01[idx];
+                float partRadius = SizeToRadius[idx];
+                float rr = Mathf.Max(0.06f,
+                    (BlastFxRuntimeConfig.BaseRadius * 0.55f + partRadius * 0.70f)
+                    * Mathf.Lerp(0.92f, 1.16f, size01));
+
+                int maxDebris = VacuumDebrisCounts[idx];
+                float debrisSpeedScale = Mathf.Lerp(0.765f, 1.08f, size01);
+                float debrisSizeScale  = Mathf.Lerp(0.55f, 0.90f, size01);
+
+                GameObject root = new GameObject("KerbalFX_BlastFX_VacuumPool");
+                root.SetActive(false);
+
+                bool fromPrefab = false;
+                ParticleSystem debris = KcsExplosionAssets.TryCloneVacuumDebrisForPool(root.transform, 0);
+                if (debris != null)
+                    fromPrefab = true;
+                else
+                    debris = CreateVacuumDebris(root.transform, 0, rr,
+                        maxDebris, debrisSpeedScale, debrisSizeScale);
+
+                if (debris == null)
+                {
+                    Destroy(root);
+                    return null;
+                }
+
+                return new PoolSlot
+                {
+                    Root = root,
+                    Sparks = null,
+                    Chunks = debris,
+                    Smoke = null,
+                    AnchorTransform = null,
+                    VacuumDebrisFromBundledPrefab = fromPrefab,
+                    Busy = false,
+                    ReturnTime = 0f
+                };
             }
-
-            return new PoolSlot
+            finally
             {
-                Root = root,
-                Sparks = null,
-                Chunks = debris,
-                Smoke = null,
-                Busy = false,
-                ReturnTime = 0f
-            };
+                PoolBuildMarker.End();
+            }
         }
 
         private static void ActivateSlot(PoolSlot slot, Vector3 position,
             Quaternion rotation, int layer)
         {
+            slot.Root.transform.SetParent(null, true);
             slot.Root.transform.position = position;
             slot.Root.transform.rotation = rotation;
             SetSlotLayer(slot, layer);
@@ -387,6 +513,59 @@ namespace KerbalFX.BlastFX
             if (slot.Sparks != null) slot.Sparks.gameObject.layer = layer;
             if (slot.Chunks != null) slot.Chunks.gameObject.layer = layer;
             if (slot.Smoke  != null) slot.Smoke.gameObject.layer  = layer;
+        }
+
+        private bool TryTakePoolGrowBudget()
+        {
+            int frame = Time.frameCount;
+            if (poolGrowFrame != frame)
+            {
+                poolGrowFrame = frame;
+                poolGrowCountThisFrame = 0;
+            }
+
+            if (poolGrowCountThisFrame >= MaxPoolGrowPerFrame)
+                return false;
+
+            poolGrowCountThisFrame++;
+            return true;
+        }
+
+        private PoolSlot RecycleOldestSlot(List<PoolSlot> pool)
+        {
+            if (pool == null || pool.Count == 0)
+                return null;
+
+            int best = -1;
+            float bestReturnTime = float.MaxValue;
+            for (int i = 0; i < pool.Count; i++)
+            {
+                PoolSlot slot = pool[i];
+                if (slot == null || slot.Root == null)
+                    continue;
+                if (!slot.Busy)
+                    return slot;
+                if (slot.ReturnTime < bestReturnTime)
+                {
+                    bestReturnTime = slot.ReturnTime;
+                    best = i;
+                }
+            }
+
+            if (best < 0)
+                return null;
+
+            PoolSlot recycled = pool[best];
+            if (recycled.Sparks != null) recycled.Sparks.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            if (recycled.Chunks != null) recycled.Chunks.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            if (recycled.Smoke != null) recycled.Smoke.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            if (recycled.Root != null) recycled.Root.SetActive(false);
+            recycled.AnchorTransform = null;
+            if (recycled.Busy)
+                activePoolSlotCount = Math.Max(0, activePoolSlotCount - 1);
+            recycled.Busy = false;
+            recycled.ReturnTime = 0f;
+            return recycled;
         }
     }
 }

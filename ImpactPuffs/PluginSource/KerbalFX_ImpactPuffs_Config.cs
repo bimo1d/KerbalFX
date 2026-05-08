@@ -39,6 +39,8 @@ namespace KerbalFX.ImpactPuffs
         public const string LogTouchdownSample = "#LOC_KerbalFX_ImpactPuffs_Log_TouchdownSample";
         public const string LogLightSample = "#LOC_KerbalFX_ImpactPuffs_Log_LightSample";
         public const string LogTouchdownLightSample = "#LOC_KerbalFX_ImpactPuffs_Log_TouchdownLightSample";
+        public const string LogEngineClusterSummary = "#LOC_KerbalFX_ImpactPuffs_Log_EngineClusterSummary";
+        public const string LogEngineClusterItem = "#LOC_KerbalFX_ImpactPuffs_Log_EngineClusterItem";
     }
 
     public class ImpactPuffsParameters : GameParameters.CustomParameterNode

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using KSP.Localization;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace KerbalFX.RoverDust
@@ -72,7 +73,7 @@ namespace KerbalFX.RoverDust
         public override GameParameters.GameMode GameMode { get { return GameParameters.GameMode.ANY; } }
         public override string Section { get { return "KerbalFX_01_Main"; } }
         public override string DisplaySection { get { return Localizer.Format(RoverDustLoc.UiSectionMain); } }
-        public override int SectionOrder { get { return 10; } }
+        public override int SectionOrder { get { return 11; } }
         public override bool HasPresets { get { return false; } }
     }
 
@@ -279,6 +280,16 @@ namespace KerbalFX.RoverDust
     {
         protected override bool IsModuleEnabled { get { return RoverDustConfig.EnableDust; } }
         protected override bool IsDebugLogging { get { return RoverDustConfig.DebugLogging; } }
+        protected override int CurrentConfigRevision
+        {
+            get
+            {
+                unchecked
+                {
+                    return RoverDustConfig.Revision * 397 ^ RoverDustRuntimeConfig.Revision;
+                }
+            }
+        }
 
         protected override void RefreshSettings()
         {
@@ -344,11 +355,26 @@ namespace KerbalFX.RoverDust
         private readonly List<WheelEmitterSpec> emitterSpecs = new List<WheelEmitterSpec>();
         private readonly List<WheelPartScan> wheelPartScans = new List<WheelPartScan>();
         private readonly List<WheelCandidate> wheelCandidates = new List<WheelCandidate>();
+        private readonly List<WheelCluster> wheelClusters = new List<WheelCluster>(MaxEffectWheelColliders);
+        private readonly Dictionary<uint, CachedWheelColliders> wheelColliderCache =
+            new Dictionary<uint, CachedWheelColliders>(32);
+        private readonly int[] selectedWheelIds = new int[MaxEffectWheelColliders];
+        private readonly int[] quadrantCandidate = new int[MaxEffectWheelColliders];
+        private readonly float[] quadrantScore = new float[MaxEffectWheelColliders];
+        private readonly WheelCollider[] selectedColliderScratch = new WheelCollider[MaxEffectWheelColliders];
         private KerbalFxVesselPartSnapshot partSnapshot;
         private float skipDebugTimer;
+        private float cachedBodyVisibility = 1f;
         private string lastSkipReason = string.Empty;
+        private string cachedBodyVisibilityName = string.Empty;
+        private int cachedBodyVisibilityRevision = -1;
+        private int selectedWheelIdCount;
         private const int MaxEffectWheelColliders = 4;
         private const float SkipDebugInterval = 1.2f;
+        private static readonly ProfilerMarker RebuildEmittersMarker =
+            new ProfilerMarker("KerbalFX.RoverDust.RebuildEmitters");
+        private static readonly ProfilerMarker WheelScanMarker =
+            new ProfilerMarker("KerbalFX.RoverDust.WheelScan");
 
         public int EmitterCount { get { return emitters.Count; } }
         public bool HasEmitters { get { return emitters.Count > 0; } }
@@ -370,7 +396,10 @@ namespace KerbalFX.RoverDust
                 return;
 
             if (partSnapshot.HasChanged(vessel))
+            {
+                InvalidateWheelColliderCache();
                 RebuildEmitters();
+            }
         }
 
         public void Tick(float dt)
@@ -383,11 +412,8 @@ namespace KerbalFX.RoverDust
             if (vessel == null || !vessel.loaded || vessel.packed || vessel.Splashed)
             {
                 StopAll();
-                LogTickSkip(
-                    "invalid loaded=" + (vessel != null && vessel.loaded)
-                    + " packed=" + (vessel != null && vessel.packed)
-                    + " splashed=" + (vessel != null && vessel.Splashed),
-                    dt);
+                if (ShouldLogTickSkip())
+                    LogTickSkip(BuildInvalidSkipReason(), dt);
                 return;
             }
 
@@ -396,24 +422,20 @@ namespace KerbalFX.RoverDust
             if (!moving || !nearGround)
             {
                 StopAll();
-                LogTickSkip(
-                    "gate moving=" + moving
-                    + " nearGround=" + nearGround
-                    + " speed=" + vessel.srfSpeed.ToString("F2", CultureInfo.InvariantCulture)
-                    + " landed=" + vessel.Landed
-                    + " hTerrain=" + vessel.heightFromTerrain.ToString("F2", CultureInfo.InvariantCulture),
-                    dt);
+                if (ShouldLogTickSkip())
+                    LogTickSkip(BuildGateSkipReason(moving, nearGround), dt);
                 return;
             }
 
             lastSkipReason = string.Empty;
+            float bodyVisibility = GetCachedBodyVisibility();
             for (int i = 0; i < emitters.Count; i++)
-                emitters[i].Tick(vessel, dt);
+                emitters[i].Tick(vessel, dt, bodyVisibility);
         }
 
         private void LogTickSkip(string reason, float dt)
         {
-            if (!RoverDustConfig.DebugLogging || vessel != FlightGlobals.ActiveVessel)
+            if (!ShouldLogTickSkip())
                 return;
 
             if (reason != lastSkipReason)
@@ -434,6 +456,27 @@ namespace KerbalFX.RoverDust
                 reason));
         }
 
+        private bool ShouldLogTickSkip()
+        {
+            return RoverDustConfig.DebugLogging && vessel == FlightGlobals.ActiveVessel;
+        }
+
+        private string BuildInvalidSkipReason()
+        {
+            return "invalid loaded=" + (vessel != null && vessel.loaded)
+                + " packed=" + (vessel != null && vessel.packed)
+                + " splashed=" + (vessel != null && vessel.Splashed);
+        }
+
+        private string BuildGateSkipReason(bool moving, bool nearGround)
+        {
+            return "gate moving=" + moving
+                + " nearGround=" + nearGround
+                + " speed=" + vessel.srfSpeed.ToString("F2", CultureInfo.InvariantCulture)
+                + " landed=" + vessel.Landed
+                + " hTerrain=" + vessel.heightFromTerrain.ToString("F2", CultureInfo.InvariantCulture);
+        }
+
         public void StopAll()
         {
             for (int i = 0; i < emitters.Count; i++)
@@ -447,41 +490,59 @@ namespace KerbalFX.RoverDust
 
         private void RebuildEmitters()
         {
-            DisposeEmitters();
-            emitterSpecs.Clear();
-            wheelPartScans.Clear();
-            wheelCandidates.Clear();
-            partSnapshot.Capture(vessel);
-            if (vessel == null || vessel.parts == null)
-                return;
-
-            int wheelPartCount = 0;
-            for (int i = 0; i < vessel.parts.Count; i++)
+            RebuildEmittersMarker.Begin();
+            try
             {
-                Part part = vessel.parts[i];
-                WheelCollider[] colliders;
-                if (!PartLooksLikeWheel(part, out colliders))
-                    continue;
+                DisposeEmitters();
+                emitterSpecs.Clear();
+                wheelPartScans.Clear();
+                wheelCandidates.Clear();
+                partSnapshot.Capture(vessel);
+                if (vessel == null || vessel.parts == null)
+                    return;
 
-                wheelPartCount++;
-                wheelPartScans.Add(new WheelPartScan(part, colliders));
-                AddWheelCandidates(part, colliders);
+                int wheelPartCount = 0;
+                WheelScanMarker.Begin();
+                try
+                {
+                    for (int i = 0; i < vessel.parts.Count; i++)
+                    {
+                        Part part = vessel.parts[i];
+                        WheelCollider[] colliders;
+                        if (!TryGetCachedWheelColliders(part, out colliders))
+                            continue;
+
+                        wheelPartCount++;
+                        wheelPartScans.Add(new WheelPartScan(part, colliders));
+                        AddWheelCandidates(part, colliders);
+                    }
+                }
+                finally
+                {
+                    WheelScanMarker.End();
+                }
+
+                SelectEffectWheelIds();
+                for (int i = 0; i < wheelPartScans.Count; i++)
+                {
+                    int selectedCount = FilterSelectedCollidersNonAlloc(wheelPartScans[i].Colliders);
+                    AddPartEmitterSpecs(wheelPartScans[i].Part, selectedColliderScratch, selectedCount);
+                    ClearSelectedColliderScratch(selectedCount);
+                }
+
+                float vesselBudgetScale = GetVesselEmitterBudgetScale(emitterSpecs.Count);
+                float bodyVisibility = GetCachedBodyVisibility();
+                for (int i = 0; i < emitterSpecs.Count; i++)
+                    emitters.Add(new WheelDustEmitter(emitterSpecs[i].Part, emitterSpecs[i].Wheels, vesselBudgetScale, i, bodyVisibility));
+
+                LogVesselScan(wheelPartCount);
+                wheelPartScans.Clear();
+                wheelCandidates.Clear();
             }
-
-            HashSet<int> selectedWheelIds = SelectEffectWheelIds();
-            for (int i = 0; i < wheelPartScans.Count; i++)
+            finally
             {
-                WheelCollider[] selected = FilterSelectedColliders(wheelPartScans[i].Colliders, selectedWheelIds);
-                AddPartEmitterSpecs(wheelPartScans[i].Part, selected);
+                RebuildEmittersMarker.End();
             }
-
-            float vesselBudgetScale = GetVesselEmitterBudgetScale(emitterSpecs.Count);
-            for (int i = 0; i < emitterSpecs.Count; i++)
-                emitters.Add(new WheelDustEmitter(emitterSpecs[i].Part, emitterSpecs[i].Wheels, vesselBudgetScale, i));
-
-            LogVesselScan(wheelPartCount);
-            wheelPartScans.Clear();
-            wheelCandidates.Clear();
         }
 
         private void AddWheelCandidates(Part part, WheelCollider[] colliders)
@@ -502,14 +563,14 @@ namespace KerbalFX.RoverDust
             }
         }
 
-        private HashSet<int> SelectEffectWheelIds()
+        private void SelectEffectWheelIds()
         {
-            HashSet<int> selected = new HashSet<int>();
+            selectedWheelIdCount = 0;
             if (wheelCandidates.Count <= MaxEffectWheelColliders)
             {
                 for (int i = 0; i < wheelCandidates.Count; i++)
-                    selected.Add(wheelCandidates[i].Id);
-                return selected;
+                    AddSelectedWheelId(wheelCandidates[i].Id);
+                return;
             }
 
             Vector3 center = Vector3.zero;
@@ -517,8 +578,12 @@ namespace KerbalFX.RoverDust
                 center += wheelCandidates[i].VesselLocalPosition;
             center /= wheelCandidates.Count;
 
-            int[] quadrantCandidate = { -1, -1, -1, -1 };
-            float[] quadrantScore = { float.MinValue, float.MinValue, float.MinValue, float.MinValue };
+            for (int i = 0; i < MaxEffectWheelColliders; i++)
+            {
+                quadrantCandidate[i] = -1;
+                quadrantScore[i] = float.MinValue;
+            }
+
             for (int i = 0; i < wheelCandidates.Count; i++)
             {
                 Vector3 delta = wheelCandidates[i].VesselLocalPosition - center;
@@ -532,15 +597,15 @@ namespace KerbalFX.RoverDust
 
             for (int i = 0; i < quadrantCandidate.Length; i++)
                 if (quadrantCandidate[i] >= 0)
-                    selected.Add(wheelCandidates[quadrantCandidate[i]].Id);
+                    AddSelectedWheelId(wheelCandidates[quadrantCandidate[i]].Id);
 
-            while (selected.Count < MaxEffectWheelColliders)
+            while (selectedWheelIdCount < MaxEffectWheelColliders)
             {
                 int best = -1;
                 float bestScore = float.MinValue;
                 for (int i = 0; i < wheelCandidates.Count; i++)
                 {
-                    if (selected.Contains(wheelCandidates[i].Id))
+                    if (IsSelectedWheel(wheelCandidates[i].Id))
                         continue;
                     float score = (wheelCandidates[i].VesselLocalPosition - center).sqrMagnitude;
                     if (score <= bestScore)
@@ -550,36 +615,49 @@ namespace KerbalFX.RoverDust
                 }
                 if (best < 0)
                     break;
-                selected.Add(wheelCandidates[best].Id);
+                AddSelectedWheelId(wheelCandidates[best].Id);
             }
-
-            return selected;
         }
 
-        private static WheelCollider[] FilterSelectedColliders(WheelCollider[] colliders, HashSet<int> selectedWheelIds)
+        private void AddSelectedWheelId(int id)
         {
-            if (colliders == null || colliders.Length == 0 || selectedWheelIds == null || selectedWheelIds.Count == 0)
-                return new WheelCollider[0];
+            if (id == 0 || selectedWheelIdCount >= selectedWheelIds.Length || IsSelectedWheel(id))
+                return;
+            selectedWheelIds[selectedWheelIdCount++] = id;
+        }
 
-            List<WheelCollider> selected = new List<WheelCollider>(Mathf.Min(colliders.Length, MaxEffectWheelColliders));
+        private bool IsSelectedWheel(int id)
+        {
+            for (int i = 0; i < selectedWheelIdCount; i++)
+                if (selectedWheelIds[i] == id)
+                    return true;
+            return false;
+        }
+
+        private int FilterSelectedCollidersNonAlloc(WheelCollider[] colliders)
+        {
+            if (colliders == null || colliders.Length == 0 || selectedWheelIdCount == 0)
+                return 0;
+
+            int count = 0;
             for (int i = 0; i < colliders.Length; i++)
             {
                 WheelCollider collider = colliders[i];
-                if (collider != null && selectedWheelIds.Contains(collider.GetInstanceID()))
-                    selected.Add(collider);
+                if (collider != null && IsSelectedWheel(collider.GetInstanceID()) && count < selectedColliderScratch.Length)
+                    selectedColliderScratch[count++] = collider;
             }
-            return selected.ToArray();
+            return count;
         }
 
-        private void AddPartEmitterSpecs(Part part, WheelCollider[] colliders)
+        private void ClearSelectedColliderScratch(int count)
         {
-            List<WheelCollider[]> clusters = BuildWheelClusters(part, colliders);
-            for (int i = 0; i < clusters.Count; i++)
-            {
-                WheelCollider[] cluster = clusters[i];
-                if (cluster != null && cluster.Length > 0)
-                    emitterSpecs.Add(new WheelEmitterSpec(part, cluster));
-            }
+            for (int i = 0; i < count && i < selectedColliderScratch.Length; i++)
+                selectedColliderScratch[i] = null;
+        }
+
+        private void AddPartEmitterSpecs(Part part, WheelCollider[] colliders, int colliderCount)
+        {
+            BuildWheelClustersIntoSpecs(part, colliders, colliderCount);
         }
 
         private void LogVesselScan(int wheelPartCount)
@@ -596,13 +674,35 @@ namespace KerbalFX.RoverDust
             emitters.Clear();
         }
 
-        private static bool PartLooksLikeWheel(Part part, out WheelCollider[] colliders)
+        private bool TryGetCachedWheelColliders(Part part, out WheelCollider[] colliders)
         {
             colliders = null;
             if (part == null)
                 return false;
-            colliders = part.GetComponentsInChildren<WheelCollider>(true);
-            return colliders != null && colliders.Length > 0;
+
+            CachedWheelColliders cached;
+            if (wheelColliderCache.TryGetValue(part.flightID, out cached) && cached.Part == part)
+            {
+                colliders = cached.Colliders;
+                return cached.HasWheels;
+            }
+
+            WheelCollider[] found = part.GetComponentsInChildren<WheelCollider>(true);
+            cached = new CachedWheelColliders
+            {
+                Part = part,
+                FlightId = part.flightID,
+                Colliders = found,
+                HasWheels = found != null && found.Length > 0
+            };
+            wheelColliderCache[part.flightID] = cached;
+            colliders = found;
+            return cached.HasWheels;
+        }
+
+        private void InvalidateWheelColliderCache()
+        {
+            wheelColliderCache.Clear();
         }
 
         private static float GetVesselEmitterBudgetScale(int emitterCount)
@@ -614,14 +714,28 @@ namespace KerbalFX.RoverDust
             return Mathf.Lerp(1f, 0.52f, norm);
         }
 
-        private static List<WheelCollider[]> BuildWheelClusters(Part part, WheelCollider[] colliders)
+        private float GetCachedBodyVisibility()
         {
-            List<WheelCollider[]> result = new List<WheelCollider[]>();
-            if (part == null || colliders == null || colliders.Length == 0)
-                return result;
+            string bodyName = vessel != null && vessel.mainBody != null ? vessel.mainBody.bodyName : string.Empty;
+            int revision = RoverDustRuntimeConfig.Revision;
+            if (cachedBodyVisibilityRevision == revision && bodyName == cachedBodyVisibilityName)
+                return cachedBodyVisibility;
 
-            List<WheelCluster> clusters = new List<WheelCluster>();
-            for (int i = 0; i < colliders.Length; i++)
+            cachedBodyVisibilityName = bodyName;
+            cachedBodyVisibilityRevision = revision;
+            cachedBodyVisibility = string.IsNullOrEmpty(bodyName)
+                ? 1f
+                : RoverDustRuntimeConfig.GetBodyVisibilityMultiplier(bodyName);
+            return cachedBodyVisibility;
+        }
+
+        private void BuildWheelClustersIntoSpecs(Part part, WheelCollider[] colliders, int colliderCount)
+        {
+            if (part == null || colliders == null || colliderCount <= 0)
+                return;
+
+            wheelClusters.Clear();
+            for (int i = 0; i < colliderCount; i++)
             {
                 WheelCollider collider = colliders[i];
                 if (collider == null || collider.transform == null)
@@ -631,9 +745,9 @@ namespace KerbalFX.RoverDust
                 float radius = GetClusterWheelRadius(collider);
                 bool attached = false;
 
-                for (int c = 0; c < clusters.Count; c++)
+                for (int c = 0; c < wheelClusters.Count; c++)
                 {
-                    if (!clusters[c].TryAdd(collider, localPos, radius))
+                    if (!wheelClusters[c].TryAdd(collider, localPos, radius))
                         continue;
 
                     attached = true;
@@ -641,13 +755,15 @@ namespace KerbalFX.RoverDust
                 }
 
                 if (!attached)
-                    clusters.Add(new WheelCluster(collider, localPos, radius));
+                {
+                    WheelCluster cluster = new WheelCluster();
+                    cluster.Reset(collider, localPos, radius);
+                    wheelClusters.Add(cluster);
+                }
             }
 
-            for (int i = 0; i < clusters.Count; i++)
-                result.Add(clusters[i].ToArray());
-
-            return result;
+            for (int i = 0; i < wheelClusters.Count; i++)
+                emitterSpecs.Add(new WheelEmitterSpec(part, wheelClusters[i].ToArray()));
         }
 
         private static float GetClusterWheelRadius(WheelCollider collider)
@@ -669,15 +785,19 @@ namespace KerbalFX.RoverDust
 
         private sealed class WheelCluster
         {
-            private readonly List<WheelCollider> wheels = new List<WheelCollider>();
+            private readonly WheelCollider[] wheels = new WheelCollider[MaxEffectWheelColliders];
+            private int count;
             private Vector3 center;
             private Vector3 min;
             private Vector3 max;
             private float maxRadius;
 
-            public WheelCluster(WheelCollider collider, Vector3 localPos, float radius)
+            public void Reset(WheelCollider collider, Vector3 localPos, float radius)
             {
-                wheels.Add(collider);
+                for (int i = 0; i < wheels.Length; i++)
+                    wheels[i] = null;
+                wheels[0] = collider;
+                count = 1;
                 center = localPos;
                 min = localPos;
                 max = localPos;
@@ -686,6 +806,9 @@ namespace KerbalFX.RoverDust
 
             public bool TryAdd(WheelCollider collider, Vector3 localPos, float radius)
             {
+                if (count >= wheels.Length)
+                    return false;
+
                 float joinDistance = Mathf.Max(maxRadius, radius) * 2.60f;
                 if (Vector3.Distance(localPos, center) > joinDistance)
                     return false;
@@ -698,18 +821,29 @@ namespace KerbalFX.RoverDust
                 if (maxSpan > compactLimit)
                     return false;
 
-                wheels.Add(collider);
+                wheels[count++] = collider;
                 min = newMin;
                 max = newMax;
                 maxRadius = Mathf.Max(maxRadius, radius);
-                center = (center * (wheels.Count - 1) + localPos) / wheels.Count;
+                center = (center * (count - 1) + localPos) / count;
                 return true;
             }
 
             public WheelCollider[] ToArray()
             {
-                return wheels.ToArray();
+                WheelCollider[] result = new WheelCollider[count];
+                for (int i = 0; i < count; i++)
+                    result[i] = wheels[i];
+                return result;
             }
+        }
+
+        private sealed class CachedWheelColliders
+        {
+            public Part Part;
+            public uint FlightId;
+            public WheelCollider[] Colliders;
+            public bool HasWheels;
         }
 
         private sealed class WheelEmitterSpec

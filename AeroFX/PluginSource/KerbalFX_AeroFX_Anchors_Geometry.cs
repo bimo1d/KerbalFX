@@ -7,11 +7,43 @@ namespace KerbalFX.AeroFX
     {
         private static bool TryGetPartBounds(Part part, out Bounds bounds)
         {
+            if (activePartBoundsCache != null)
+                return activePartBoundsCache.TryGetBounds(part, out bounds);
+
+            return ComputePartBounds(part, out bounds);
+        }
+
+        private static bool ComputePartBounds(Part part, out Bounds bounds)
+        {
             bounds = new Bounds();
             if (part == null)
                 return false;
 
             var renderers = part.FindModelComponents<Renderer>();
+            if (renderers == null || renderers.Count == 0)
+                return false;
+
+            return ComputePartBounds(renderers, out bounds);
+        }
+
+        private static Renderer[] CollectPartRenderers(Part part)
+        {
+            if (part == null)
+                return null;
+
+            var renderers = part.FindModelComponents<Renderer>();
+            if (renderers == null || renderers.Count == 0)
+                return null;
+
+            Renderer[] result = new Renderer[renderers.Count];
+            for (int i = 0; i < renderers.Count; i++)
+                result[i] = renderers[i];
+            return result;
+        }
+
+        private static bool ComputePartBounds(IList<Renderer> renderers, out Bounds bounds)
+        {
+            bounds = new Bounds();
             if (renderers == null || renderers.Count == 0)
                 return false;
 
@@ -50,17 +82,6 @@ namespace KerbalFX.AeroFX
             point = bounds.center;
             outward = Vector3.right;
             score = float.MinValue;
-
-            if (useFastAnchorScan)
-                return TryGetBoundsTipPoint(
-                    bounds,
-                    centerOfMass,
-                    forwardAxis,
-                    rightAxis,
-                    role,
-                    out point,
-                    out outward,
-                    out score);
 
             Vector3 partCenter = bounds.center;
             bool foundMeshPoint = false;
@@ -174,77 +195,6 @@ namespace KerbalFX.AeroFX
             outward = finalRadialOffset.normalized;
             score = bestScore;
             return true;
-        }
-
-        private static bool TryGetBoundsTipPoint(
-            Bounds bounds,
-            Vector3 centerOfMass,
-            Vector3 forwardAxis,
-            Vector3 rightAxis,
-            WingtipAnchorRole role,
-            out Vector3 point,
-            out Vector3 outward,
-            out float score)
-        {
-            Vector3 offset = bounds.center - centerOfMass;
-            Vector3 radialOffset = Vector3.ProjectOnPlane(offset, forwardAxis);
-            float sideSign = Vector3.Dot(offset, rightAxis) < 0f ? -1f : 1f;
-            Vector3 radialDirection = radialOffset.sqrMagnitude > 0.01f
-                ? radialOffset.normalized
-                : ((role == WingtipAnchorRole.MainWing
-                    || role == WingtipAnchorRole.Control
-                    || role == WingtipAnchorRole.Canard)
-                        ? rightAxis * sideSign
-                        : cachedUpAxis);
-            Vector3 supportDirection = role == WingtipAnchorRole.MainWing
-                || role == WingtipAnchorRole.Control
-                || role == WingtipAnchorRole.Canard
-                    ? rightAxis * sideSign
-                    : radialDirection;
-
-            point = bounds.center + supportDirection * GetBoundsReach(bounds, supportDirection);
-            Vector3 supportOffset = point - centerOfMass;
-            Vector3 supportRadialOffset = Vector3.ProjectOnPlane(supportOffset, forwardAxis);
-            outward = supportRadialOffset.sqrMagnitude > 0.01f ? supportRadialOffset.normalized : radialDirection;
-            score = float.MinValue;
-            if (supportRadialOffset.sqrMagnitude < 0.01f)
-                return false;
-
-            float lateralDist = Mathf.Abs(Vector3.Dot(supportOffset, rightAxis));
-            float heightAboveCom = Vector3.Dot(supportOffset, cachedUpAxis);
-            float radialDist = supportRadialOffset.magnitude;
-            float forwardOffset = Mathf.Abs(Vector3.Dot(point - bounds.center, forwardAxis));
-            score = EvaluateSupportPointScore(role, lateralDist, radialDist, forwardOffset, heightAboveCom);
-            return radialDist >= 0.20f;
-        }
-
-        private static bool TryGetBoundsFrontierPoint(
-            Part part,
-            Vector3 centerOfMass,
-            Vector3 forwardAxis,
-            Vector3 rightAxis,
-            float sideSign,
-            out Vector3 point,
-            out float lateralDist,
-            out float heightAboveCom,
-            out float radialDist)
-        {
-            point = Vector3.zero;
-            lateralDist = 0f;
-            heightAboveCom = 0f;
-            radialDist = 0f;
-
-            Bounds bounds;
-            if (!TryGetPartBounds(part, out bounds))
-                return false;
-
-            Vector3 direction = rightAxis * (sideSign < 0f ? -1f : 1f);
-            point = bounds.center + direction * GetBoundsReach(bounds, direction);
-            Vector3 offset = point - centerOfMass;
-            lateralDist = Mathf.Abs(Vector3.Dot(offset, rightAxis));
-            heightAboveCom = Vector3.Dot(offset, cachedUpAxis);
-            radialDist = Vector3.ProjectOnPlane(offset, forwardAxis).magnitude;
-            return radialDist >= 0.20f;
         }
 
         private static float GetBoundsReach(Bounds bounds, Vector3 axis)
@@ -374,18 +324,6 @@ namespace KerbalFX.AeroFX
             heightAboveCom = 0f;
             radialDist = 0f;
 
-            if (useFastAnchorScan)
-                return TryGetBoundsFrontierPoint(
-                    part,
-                    centerOfMass,
-                    forwardAxis,
-                    rightAxis,
-                    sideSign,
-                    out point,
-                    out lateralDist,
-                    out heightAboveCom,
-                    out radialDist);
-
             var meshFilters = part.FindModelComponents<MeshFilter>();
             if (meshFilters == null)
                 return false;
@@ -479,14 +417,6 @@ namespace KerbalFX.AeroFX
                 return;
 
             Vector3 bestPoint = bounds.center + cachedUpAxis * GetBoundsReach(bounds, cachedUpAxis);
-            if (useFastAnchorScan)
-            {
-                candidate.Point = bestPoint;
-                Vector3 fastRadialOffset = Vector3.ProjectOnPlane(bestPoint - cachedCenterOfMass, cachedForwardAxis);
-                candidate.Outward = fastRadialOffset.sqrMagnitude > 0.01f ? fastRadialOffset.normalized : cachedUpAxis;
-                return;
-            }
-
             float bestDot = float.MinValue;
 
             var meshFilters = candidate.Part.FindModelComponents<MeshFilter>();
@@ -528,30 +458,6 @@ namespace KerbalFX.AeroFX
         {
             if (candidate.Part == null)
                 return;
-
-            if (useFastAnchorScan)
-            {
-                Bounds bounds;
-                if (!TryGetPartBounds(candidate.Part, out bounds))
-                    return;
-
-                Vector3 direction;
-                if (!TryGetRadialDirection(bounds.center, out direction))
-                    return;
-
-                Vector3 fastPoint = bounds.center + direction * GetBoundsReach(bounds, direction);
-                Vector3 fastOffset = fastPoint - cachedCenterOfMass;
-                Vector3 fastRadialOffset = Vector3.ProjectOnPlane(fastOffset, cachedForwardAxis);
-                if (fastRadialOffset.sqrMagnitude < 0.01f)
-                    return;
-
-                candidate.Point = fastPoint;
-                candidate.Outward = fastRadialOffset.normalized;
-                candidate.RadialDistance = fastRadialOffset.magnitude;
-                candidate.LateralDistance = Mathf.Abs(Vector3.Dot(fastOffset, cachedRightAxis));
-                candidate.ForwardOffset = Vector3.Dot(fastOffset, cachedForwardAxis);
-                return;
-            }
 
             Vector3 bestPoint = candidate.Point;
             float bestRadial = candidate.RadialDistance;

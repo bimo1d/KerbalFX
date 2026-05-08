@@ -30,16 +30,17 @@ Engine-ground interaction and touchdown effects.
 Atmospheric ribbon condensation for wings, control surfaces, and fins.
 
 - Ribbon emitters attached to suitable wing-like parts.
-- Up to four emitters per vessel.
+- Four emitters by default, configurable up to six per vessel.
 - Activation based on speed, density, dynamic pressure, and maneuver load.
 
 ### KerbalFX - BlastFX
-FX module for separators, decouplers, and docking ports.
+FX module for separators, decouplers, docking ports, and vacuum part explosions.
 
 - Pyro effects (sparks, smoke, chunk fragments) on supported separator parts.
 - Softer smoke-puff burst for ordinary decouplers.
 - Gas venting effect on docking-port undock. WIP
 - Lingering small debris field in space after decoupling.
+- Vacuum explosion replacement FX for eligible parts destroyed in space.
 - Size-based effects scaling.
 
 ## Installation
@@ -54,6 +55,8 @@ FX module for separators, decouplers, and docking ports.
 
 - ModuleManager
 - `KerbalFX Core` is required for all optional KerbalFX modules.
+- `KSPBurst` is required for `KerbalFX - AeroFX` and `KerbalFX - Impact Puffs`.
+- `Harmony2` is required for `KerbalFX - BlastFX`.
 
 ## Configuration
 
@@ -88,6 +91,10 @@ Difficulty Settings:
 Public beta.
 
 [KSP Forum thread](https://forum.kerbalspaceprogram.com/topic/230118-wip1125-kerbalfx-lightweight-modular-fx-framework-v05b-rover-dust-impact-puffs/)
+
+## Credits
+
+[Halbann](https://github.com/Halbann)
 
 ## Disclaimer and License
 

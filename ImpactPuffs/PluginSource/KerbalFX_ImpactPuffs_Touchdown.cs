@@ -140,6 +140,7 @@ namespace KerbalFX.ImpactPuffs
 
         public void Dispose()
         {
+            TouchdownBurstPool.ReleaseOwned(this);
         }
 
         private static float GetTouchdownEnergy01(float impactSpeed)
@@ -465,7 +466,7 @@ namespace KerbalFX.ImpactPuffs
             RestartLayer(slot.RingMist);
 
             float ringLifeMax = context.Splash ? 2.55f : 2.30f;
-            TouchdownBurstPool.MarkBusy(slot, ringLifeMax);
+            TouchdownBurstPool.MarkBusy(slot, ringLifeMax, this);
 
             LogRingShockDebug(
                 impactSpeed,

@@ -318,12 +318,14 @@ namespace KerbalFX.BlastFX
             main.loop = false;
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
-            main.maxParticles = Mathf.Clamp(maxCount * 3, 32, 384);
-            main.startLifetime = new ParticleSystem.MinMaxCurve(14f, 18f);
+            main.maxParticles = Mathf.Clamp(maxCount * 4, 48, 768);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(
+                VacuumDebrisLifetimeMin, VacuumDebrisLifetimeMax);
             main.startSpeed = new ParticleSystem.MinMaxCurve(
-                0.30f * speedScale, 1.10f * speedScale);
+                BlastFxRuntimeConfig.SparkSpeed * 0.58f * speedScale,
+                BlastFxRuntimeConfig.SparkSpeed * 1.28f * speedScale);
             main.startSize = new ParticleSystem.MinMaxCurve(
-                0.027f * sizeScale, 0.086f * sizeScale);
+                0.05f * sizeScale, 0.18f * sizeScale);
             main.gravityModifier = new ParticleSystem.MinMaxCurve(0f);
             main.startRotation = new ParticleSystem.MinMaxCurve(-Mathf.PI, Mathf.PI);
 
@@ -331,34 +333,24 @@ namespace KerbalFX.BlastFX
             em.rateOverTime = 0f;
 
             ParticleSystem.ShapeModule sh = ps.shape;
-            sh.shapeType = ParticleSystemShapeType.Donut;
-            sh.radius = ringRadius * 3.40f;
-            sh.donutRadius = ringRadius * 0.55f;
+            sh.shapeType = ParticleSystemShapeType.Circle;
+            sh.radius = ringRadius;
+            sh.radiusThickness = 0.04f;
             sh.arc = 360f;
-            sh.radiusThickness = 0.85f;
 
             ParticleSystem.VelocityOverLifetimeModule vel = ps.velocityOverLifetime;
             vel.enabled = true;
             vel.space = ParticleSystemSimulationSpace.Local;
             vel.radial = new ParticleSystem.MinMaxCurve(
-                0.55f * speedScale, 1.85f * speedScale);
-
-            ParticleSystem.LimitVelocityOverLifetimeModule limit =
-                ps.limitVelocityOverLifetime;
-            limit.enabled = true;
-            limit.separateAxes = false;
-            limit.space = ParticleSystemSimulationSpace.Local;
-            limit.limit = new ParticleSystem.MinMaxCurve(
-                1f,
-                new AnimationCurve(
-                    new Keyframe(0f, 1.80f * speedScale),
-                    new Keyframe(0.10f, 0.55f * speedScale),
-                    new Keyframe(1f, 0.04f * speedScale)));
-            limit.dampen = 0.92f;
+                BlastFxRuntimeConfig.SparkSpeed * 0.95f * speedScale,
+                BlastFxRuntimeConfig.SparkSpeed * 1.95f * speedScale);
+            vel.x = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
+            vel.y = new ParticleSystem.MinMaxCurve(-0.18f, 0.18f);
+            vel.z = new ParticleSystem.MinMaxCurve(-0.14f, 0.14f);
 
             ParticleSystem.RotationOverLifetimeModule rot = ps.rotationOverLifetime;
             rot.enabled = true;
-            rot.z = new ParticleSystem.MinMaxCurve(-1.2f, 1.2f);
+            rot.z = new ParticleSystem.MinMaxCurve(-16.0f, 16.0f);
 
             ParticleSystem.SizeOverLifetimeModule debrisSz = ps.sizeOverLifetime;
             debrisSz.enabled = true;
@@ -366,7 +358,7 @@ namespace KerbalFX.BlastFX
                 1f,
                 new AnimationCurve(
                     new Keyframe(0f, 1.00f),
-                    new Keyframe(0.50f, 1.00f),
+                    new Keyframe(0.55f, 1.00f),
                     new Keyframe(0.85f, 0.55f),
                     new Keyframe(1f, 0.00f)));
 
@@ -374,10 +366,11 @@ namespace KerbalFX.BlastFX
             col.enabled = true;
             col.color = GetVacuumDebrisGradient();
 
-            ParticleSystemRenderer r = ps.GetComponent<ParticleSystemRenderer>();
-            r.renderMode = ParticleSystemRenderMode.Mesh;
-            r.mesh = BlastFxAssets.GetChunkMesh();
-            r.sharedMaterial = BlastFxAssets.GetChunkMaterial();
+            ParticleSystemRenderer ren = ps.GetComponent<ParticleSystemRenderer>();
+            ren.renderMode = ParticleSystemRenderMode.Mesh;
+            ren.mesh = BlastFxAssets.GetChunkMesh();
+            ren.sharedMaterial = BlastFxAssets.GetChunkMaterial();
+
             return ps;
         }
 

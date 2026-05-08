@@ -10,6 +10,7 @@ namespace KerbalFX.ImpactPuffs
             public GameObject Root;
             public ParticleSystem RingEdge;
             public ParticleSystem RingMist;
+            public object Owner;
             public bool Busy;
             public float ReturnTime;
         }
@@ -40,10 +41,11 @@ namespace KerbalFX.ImpactPuffs
             return fresh;
         }
 
-        public static void MarkBusy(Slot slot, float visualLifetime)
+        public static void MarkBusy(Slot slot, float visualLifetime, object owner)
         {
             if (slot == null)
                 return;
+            slot.Owner = owner;
             slot.Busy = true;
             slot.ReturnTime = Time.time + Mathf.Max(0.05f, visualLifetime) + SlotReturnPadSeconds;
         }
@@ -67,6 +69,29 @@ namespace KerbalFX.ImpactPuffs
 
                 StopSlotImmediate(slot);
                 slot.Busy = false;
+                slot.Owner = null;
+            }
+        }
+
+        public static void ReleaseOwned(object owner)
+        {
+            if (owner == null || slots.Count == 0)
+                return;
+
+            for (int i = slots.Count - 1; i >= 0; i--)
+            {
+                Slot slot = slots[i];
+                if (slot == null || slot.Root == null)
+                {
+                    slots.RemoveAt(i);
+                    continue;
+                }
+                if (slot.Owner != owner)
+                    continue;
+
+                StopSlotImmediate(slot);
+                slot.Busy = false;
+                slot.Owner = null;
             }
         }
 
@@ -109,6 +134,7 @@ namespace KerbalFX.ImpactPuffs
                 Root = root,
                 RingEdge = ringEdge,
                 RingMist = ringMist,
+                Owner = null,
                 Busy = false,
                 ReturnTime = 0f
             };

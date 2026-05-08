@@ -1,3 +1,14 @@
+## 0.8.1
+- Added **BlastFX** vacuum explosion effect for eligible parts destroyed in space, sourced from a prefab loaded out of an asset bundle.
+- Replaced procedural vacuum-debris chunks with the prefab's debris sprite material when the bundle is available.
+- Bundle prefab and source assets adapted from Halban's StockCombatAI vacuum explosion project (used with permission, treated as Unlicense).
+- **BlastFX** now patches a Kopernicus and RSE game freeze issues I found while testing the explosions. No-op when either mod is not installed and self-disables if upstream fixes the issue.
+- Improved **AeroFX** performance with KSPBurst-backed anchor metrics and ribbon path generation.
+- Removed **AeroFX** fast anchor-scan mode.
+- Improved **Impact Puffs** multi-engine plume grouping with clustered engine-ground frames and KSPBurst-backed frame math.
+- Bugfixes and general optimizations.
+- Updated dependency metadata for `KSPBurst` and `Harmony2`.
+
 ## 0.8
 - Major **Core** rework: shared lighting and surface-color sampling moved into Core for reuse across all FX modules.
 - Reworked **Rover Dust** wheel emitter with cleaner cluster ownership, faster surface sampling, and a continuity trail for landing gear.

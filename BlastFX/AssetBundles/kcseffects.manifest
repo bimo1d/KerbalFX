@@ -1,0 +1,43 @@
+ManifestFileVersion: 0
+CRC: 1680471312
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 0f732352a7f35dec43ccb2f5e0f0e0c1
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 99b1dfd9b4fe378ca7bcd087a53e1ae9
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 23
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 33
+  Script: {instanceID: 0}
+- Class: 43
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 82
+  Script: {instanceID: 0}
+- Class: 83
+  Script: {instanceID: 0}
+- Class: 169
+  Script: {instanceID: 0}
+- Class: 198
+  Script: {instanceID: 0}
+- Class: 199
+  Script: {instanceID: 0}
+SerializeReferenceClassIdentifiers: []
+Assets:
+- Assets/Prefabs/Explosion.prefab
+- Assets/Prefabs/Muzzle Flash.prefab
+- Assets/Materials/Resources/BulletTrailMat.mat
+Dependencies: []
